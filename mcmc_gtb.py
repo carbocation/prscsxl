@@ -60,8 +60,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
                 sd = float(np.sqrt(sigma / n))
                 beta_tmp = linalg.solve_triangular(dinvt_chol, beta_mrg[idx_blk], trans='T') + sd*np.random.randn(len(idx_blk),1)
                 beta[idx_blk] = linalg.solve_triangular(dinvt_chol, beta_tmp, trans='N')
-                q += np.dot(np.dot(beta[idx_blk].T, dinvt), beta[idx_blk])
-                quad += float(q)
+                quad += float(np.dot(np.dot(beta[idx_blk].T, dinvt), beta[idx_blk]))
                 mm += blk_size[kk]
 
         s1 = float((beta * beta_mrg).sum())
