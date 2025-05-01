@@ -57,13 +57,21 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
                 idx_blk = range(mm,mm+blk_size[kk])
                 dinvt = ld_blk[kk]+np.diag(1.0/psi[idx_blk].T[0])
                 dinvt_chol = linalg.cholesky(dinvt)
-                beta_tmp = linalg.solve_triangular(dinvt_chol, beta_mrg[idx_blk], trans='T') + np.sqrt(sigma/n)*np.random.randn(len(idx_blk),1)
+                sd = float(np.sqrt(sigma / n))
+                beta_tmp = linalg.solve_triangular(dinvt_chol, beta_mrg[idx_blk], trans='T') + sd*np.random.randn(len(idx_blk),1)
                 beta[idx_blk] = linalg.solve_triangular(dinvt_chol, beta_tmp, trans='N')
-                quad += np.dot(np.dot(beta[idx_blk].T, dinvt), beta[idx_blk])
+                q += np.dot(np.dot(beta[idx_blk].T, dinvt), beta[idx_blk])
+                quad += float(q)
                 mm += blk_size[kk]
 
-        err = max(n/2.0*(1.0-2.0*sum(beta*beta_mrg)+quad), n/2.0*sum(beta**2/psi))
-        sigma = 1.0/np.random.gamma((n+p)/2.0, 1.0/err)
+        s1 = float((beta * beta_mrg).sum())
+        s2 = float((beta**2 / psi).sum())
+        e1 = float(n/2.0*(1.0 - 2.0*s1 + quad))
+        e2 = float(n/2.0*s2)
+        err = max(e1, e2)
+
+        # force sigma to be a Python float (not a 0-d array)
+        sigma = float(1.0/np.random.gamma((n+p)/2.0, 1.0/err))
 
         delta = np.random.gamma(a+b, 1.0/(psi+phi))
 
@@ -73,9 +81,9 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
 
             # compute ψ_j as a float and store back into the (p,1) array
             psi[jj, 0] = gigrnd.gigrnd(
-                a - 0.5,
-                2.0 * delta_val,
-                n * (beta_val**2) / sigma
+                float(a - 0.5),
+                float(2.0 * delta_val),
+                float(n * (beta_val**2) / sigma)
             )
         
         psi[psi>1] = 1.0
