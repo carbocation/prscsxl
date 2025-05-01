@@ -36,7 +36,8 @@ def g(x, sd, td, f1, f2):
 @njit(fastmath=True)
 def gigrnd(p, a, b):
     # setup -- sample from the two-parameter version gig(lam,omega)
-    p = float(p); a = float(a); b = float(b)
+    # p = float(p); a = float(a); b = float(b)
+    # NOTE: p, a, b must already be Python floats (not arrays)
     lam = p
     omega = math.sqrt(a*b)
 
