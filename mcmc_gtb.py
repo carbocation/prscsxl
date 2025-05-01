@@ -68,8 +68,8 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
         delta = np.random.gamma(a+b, 1.0/(psi+phi))
 
         for jj in range(p):
-            delta_val = delta[jj, 0]      # scalar np.float64
-            beta_val  = beta[jj,  0]      # scalar np.float64
+            delta_val = delta[jj, 0].item()
+            beta_val  = beta[jj,  0].item()
 
             # compute ψ_j as a float and store back into the (p,1) array
             psi[jj, 0] = gigrnd.gigrnd(
