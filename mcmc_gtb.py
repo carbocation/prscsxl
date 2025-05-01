@@ -8,7 +8,6 @@ Markov Chain Monte Carlo (MCMC) sampler for polygenic prediction with continuous
 
 import numpy as np
 from scipy import linalg 
-from numpy import random
 import gigrnd
 
 
@@ -16,8 +15,8 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
     print('... MCMC ...')
 
     # seed
-    if seed != None:
-        random.seed(seed)
+    if seed is not None:
+        np.random.seed(seed)
 
     # derived stats
     beta_mrg = np.array(sst_dict['BETA'], ndmin=2).T
@@ -58,23 +57,23 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
                 idx_blk = range(mm,mm+blk_size[kk])
                 dinvt = ld_blk[kk]+np.diag(1.0/psi[idx_blk].T[0])
                 dinvt_chol = linalg.cholesky(dinvt)
-                beta_tmp = linalg.solve_triangular(dinvt_chol, beta_mrg[idx_blk], trans='T') + np.sqrt(sigma/n)*random.randn(len(idx_blk),1)
+                beta_tmp = linalg.solve_triangular(dinvt_chol, beta_mrg[idx_blk], trans='T') + np.sqrt(sigma/n)*np.random.randn(len(idx_blk),1)
                 beta[idx_blk] = linalg.solve_triangular(dinvt_chol, beta_tmp, trans='N')
                 quad += np.dot(np.dot(beta[idx_blk].T, dinvt), beta[idx_blk])
                 mm += blk_size[kk]
 
         err = max(n/2.0*(1.0-2.0*sum(beta*beta_mrg)+quad), n/2.0*sum(beta**2/psi))
-        sigma = 1.0/random.gamma((n+p)/2.0, 1.0/err)
+        sigma = 1.0/np.random.gamma((n+p)/2.0, 1.0/err)
 
-        delta = random.gamma(a+b, 1.0/(psi+phi))
+        delta = np.random.gamma(a+b, 1.0/(psi+phi))
 
         for jj in range(p):
             psi[jj] = gigrnd.gigrnd(a-0.5, 2.0*delta[jj], n*beta[jj]**2/sigma)
         psi[psi>1] = 1.0
 
         if phi_updt == True:
-            w = random.gamma(1.0, 1.0/(phi+1.0))
-            phi = random.gamma(p*b+0.5, 1.0/(sum(delta)+w))
+            w = np.random.gamma(1.0, 1.0/(phi+1.0))
+            phi = np.random.gamma(p*b+0.5, 1.0/(sum(delta)+w))
 
         # posterior
         if (itr>n_burnin) and (itr % thin == 0):

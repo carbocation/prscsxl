@@ -9,19 +9,20 @@ Reference: L Devroye. Random variate generation for the generalized inverse Gaus
 
 
 import math
-from numpy import random
+import numpy as np
+from numba import njit
 
-
+@njit(fastmath=True)
 def psi(x, alpha, lam):
     f = -alpha*(math.cosh(x)-1.0)-lam*(math.exp(x)-x-1.0)
     return f
 
-
+@njit(fastmath=True)
 def dpsi(x, alpha, lam):
     f = -alpha*math.sinh(x)-lam*(math.exp(x)-1.0)
     return f
 
-
+@njit(fastmath=True)
 def g(x, sd, td, f1, f2):
     if (x >= -sd) and (x <= td):
         f = 1.0
@@ -32,7 +33,7 @@ def g(x, sd, td, f1, f2):
 
     return f
 
-
+@njit(fastmath=True)
 def gigrnd(p, a, b):
     # setup -- sample from the two-parameter version gig(lam,omega)
     p = float(p); a = float(a); b = float(b)
@@ -96,9 +97,9 @@ def gigrnd(p, a, b):
 
     # random variate generation
     while True:
-        U = random.random()
-        V = random.random()
-        W = random.random()
+        U = np.random.random()
+        V = np.random.random()
+        W = np.random.random()
         if U < q/(p+q+r):
             rnd = -sd+q*V
         elif U < (q+r)/(p+q+r):
