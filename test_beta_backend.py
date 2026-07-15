@@ -299,7 +299,59 @@ class CudaBetaBackendTests(unittest.TestCase):
             actual_beta, expected_beta, rtol=1e-10, atol=1e-10
         )
         self.assertAlmostEqual(actual_quad, expected_quad, places=10)
-        self.assertIn('2 concurrent streams', streamed.describe())
+        self.assertIn('2 factorization streams', streamed.describe())
+        self.assertIn('2 auxiliary streams', streamed.describe())
+        self.assertIn(
+            '3 independently scheduled factor tasks', streamed.describe()
+        )
+        self.assertIn('3 matrix solve tasks', streamed.describe())
+
+    def test_stream_backend_keeps_dense_bucket_as_one_factor_task(self):
+        blocks = [np.eye(2)] * 8
+        backend = CudaStreamsBetaBackend(
+            blocks,
+            [2] * len(blocks),
+            np.ones((2 * len(blocks), 1)),
+            1000,
+            seed=123,
+            cuda_bucket_size=1,
+            cuda_streams=4,
+        )
+
+        self.assertIn('1 factorization stream', backend.describe())
+        self.assertIn(
+            '1 independently scheduled factor task', backend.describe()
+        )
+        self.assertIn('8 matrix solve tasks', backend.describe())
+        self.assertIn('4 auxiliary streams', backend.describe())
+        self.assertIn('8 batched matrices', backend.describe())
+
+    def test_stream_backend_splits_dense_bucket_solves(self):
+        rng = np.random.default_rng(17)
+        blocks = []
+        for _ in range(8):
+            values = rng.normal(size=(3, 3))
+            blocks.append(values @ values.T + np.eye(3))
+        beta_mrg = rng.normal(size=(24, 1))
+        psi = rng.uniform(0.2, 1.2, size=(24, 1))
+        hybrid = CudaHybridBetaBackend(
+            blocks, [3] * len(blocks), beta_mrg, 1000,
+            seed=321, cuda_bucket_size=1,
+        )
+        streamed = CudaStreamsBetaBackend(
+            blocks, [3] * len(blocks), beta_mrg, 1000,
+            seed=321, cuda_bucket_size=1, cuda_streams=4,
+        )
+
+        expected_beta, expected_quad = hybrid.sample(psi, 0.8)
+        actual_beta, actual_quad = streamed.sample(psi, 0.8)
+
+        np.testing.assert_allclose(
+            actual_beta, expected_beta, rtol=1e-10, atol=1e-10
+        )
+        self.assertAlmostEqual(actual_quad, expected_quad, places=10)
+        self.assertIn('8 batched matrices', streamed.describe())
+        self.assertIn('8 matrix solve tasks', streamed.describe())
 
     def test_stream_backend_is_seeded_reproducibly(self):
         blocks, sizes, beta_mrg, psi = _inputs()

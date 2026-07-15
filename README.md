@@ -196,9 +196,10 @@ solves through preallocated cuSOLVER and cuBLAS workspaces.
 for CUDA batching. Smaller values reduce padding while larger values may form
 denser batches. Default is 32.
 
-- CUDA_STREAMS (optional): Maximum number of concurrent CUDA streams used to
-overlap independent padded-size buckets. Buckets are assigned greedily by
-estimated Cholesky work. Default is 4.
+- CUDA_STREAMS (optional): Maximum number of concurrent CUDA factorization
+streams. Lighter assembly, solve, perturbation, and scatter work uses at most
+eight auxiliary streams. Tasks are assigned greedily by estimated work.
+Default is 4.
 
 - PSI_BACKEND (optional): `cpu` uses the fused Numba GIG sampler and is the
 default. `cuda` generates each gamma-distributed `delta` and its dependent GIG
@@ -302,10 +303,13 @@ For buckets containing fewer than eight matrices, the CUDA backend uses
 ordinary `potrf` and `trsm` calls; denser buckets retain the batched routines.
 This occupancy-aware dispatch preserves the exact FP64 transition.
 
-Independent buckets are assigned to separate non-blocking CUDA streams, each
-with its own cuSOLVER handle, cuBLAS handle, and factorization workspace. This
-allows real panels containing many large sparse buckets to overlap work that
-does not individually saturate the GPU.
+Every matrix in a sparse bucket, or an intact dense batched bucket, is assigned
+to a non-blocking factorization stream with its own cuSOLVER handle and
+workspace. Dense buckets retain batched Cholesky, while their one-right-hand-
+side triangular solves are scheduled independently per matrix. Fused FP64
+kernels assemble precision matrices, add perturbations with deterministic
+per-matrix quadratic-form reductions, and scatter solved coefficients without
+CuPy indexing temporaries.
 
 For a quick synthetic CPU/CUDA comparison:
 

@@ -26,6 +26,91 @@ def _destroy_stream_handles(cublas, cusolver, cublas_handles,
             pass
 
 
+_CUDA_STREAM_KERNEL_SOURCE = r"""
+extern "C" __global__
+void assemble_precision(
+        const double* ld,
+        const long long* indices,
+        const unsigned char* valid,
+        const double* psi,
+        double* precision,
+        const unsigned long long entries,
+        const int size) {
+    const unsigned long long offset =
+        (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (offset >= entries) return;
+
+    const int column = (int)(offset % (unsigned long long)size);
+    const int row = (int)(
+        (offset / (unsigned long long)size) % (unsigned long long)size
+    );
+    double value = ld[offset];
+    if (row == column) {
+        const unsigned long long matrix = offset /
+            ((unsigned long long)size * (unsigned long long)size);
+        const unsigned long long vector_offset =
+            matrix * (unsigned long long)size + (unsigned long long)row;
+        if (valid[vector_offset]) {
+            value += 1.0 / psi[indices[vector_offset]];
+        }
+    }
+    precision[offset] = value;
+}
+
+extern "C" __global__
+void perturb_quad(
+        double* rhs,
+        const long long* indices,
+        const unsigned char* valid,
+        const double* noise,
+        const double sd,
+        double* quad,
+        const int size) {
+    extern __shared__ double partial[];
+    const int matrix = blockIdx.x;
+    const unsigned long long base =
+        (unsigned long long)matrix * (unsigned long long)size;
+    double sum = 0.0;
+
+    for (int row = threadIdx.x; row < size; row += blockDim.x) {
+        const unsigned long long offset = base + (unsigned long long)row;
+        double value = rhs[offset];
+        if (valid[offset]) {
+            value += sd * noise[indices[offset]];
+        }
+        rhs[offset] = value;
+        sum += value * value;
+    }
+
+    partial[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
+        if (threadIdx.x < stride) {
+            partial[threadIdx.x] += partial[threadIdx.x + stride];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        quad[matrix] = partial[0];
+    }
+}
+
+extern "C" __global__
+void scatter_beta(
+        const double* rhs,
+        const long long* indices,
+        const unsigned char* valid,
+        double* beta,
+        const unsigned long long entries) {
+    const unsigned long long offset =
+        (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (offset < entries && valid[offset]) {
+        beta[indices[offset]] = rhs[offset];
+    }
+}
+"""
+
+
 def _block_layout(ld_blocks, block_sizes, variant_count):
     """Validate block inputs and return non-empty block slices."""
     if len(ld_blocks) != len(block_sizes):
@@ -790,16 +875,25 @@ class CudaHybridBetaBackend(CudaDirectBetaBackend):
             return
 
         for matrix_index in range(count):
-            self._potrf_single(
-                cusolver_handle,
-                self._cublas.CUBLAS_FILL_MODE_UPPER,
-                size,
-                group['precision'][matrix_index].data.ptr,
-                size,
-                workspace.data.ptr,
-                group['single_lwork'],
-                group['potrf_info'][matrix_index:].data.ptr,
+            self._factor_matrix(
+                group, matrix_index, cusolver_handle, workspace
             )
+
+    def _factor_matrix(self, group, matrix_index, cusolver_handle,
+                       workspace):
+        size = int(group['precision'].shape[-1])
+        self._potrf_single(
+            cusolver_handle,
+            self._cublas.CUBLAS_FILL_MODE_UPPER,
+            size,
+            group['precision'][matrix_index].data.ptr,
+            size,
+            workspace.data.ptr,
+            group['single_lwork'],
+            group['potrf_info'][
+                matrix_index:matrix_index + 1
+            ].data.ptr,
+        )
 
     def _solve_group(self, group, trans, cublas_handle=None):
         if cublas_handle is None:
@@ -810,23 +904,28 @@ class CudaHybridBetaBackend(CudaDirectBetaBackend):
             )
             return
 
-        size = int(group['precision'].shape[-1])
         count = int(group['precision'].shape[0])
         for matrix_index in range(count):
-            self._trsm_single(
-                cublas_handle,
-                self._cublas.CUBLAS_SIDE_LEFT,
-                self._cublas.CUBLAS_FILL_MODE_UPPER,
-                trans,
-                self._cublas.CUBLAS_DIAG_NON_UNIT,
-                size,
-                1,
-                self._one.ctypes.data,
-                group['precision'][matrix_index].data.ptr,
-                size,
-                group['rhs'][matrix_index].data.ptr,
-                size,
+            self._solve_matrix(
+                group, matrix_index, trans, cublas_handle
             )
+
+    def _solve_matrix(self, group, matrix_index, trans, cublas_handle):
+        size = int(group['precision'].shape[-1])
+        self._trsm_single(
+            cublas_handle,
+            self._cublas.CUBLAS_SIDE_LEFT,
+            self._cublas.CUBLAS_FILL_MODE_UPPER,
+            trans,
+            self._cublas.CUBLAS_DIAG_NON_UNIT,
+            size,
+            1,
+            self._one.ctypes.data,
+            group['precision'][matrix_index].data.ptr,
+            size,
+            group['rhs'][matrix_index].data.ptr,
+            size,
+        )
 
     def sample(self, psi, sigma):
         """Draw beta with regular dense routines for sparse size buckets."""
@@ -960,32 +1059,92 @@ class CudaStreamsBetaBackend(CudaHybridBetaBackend):
             raise ValueError('CUDA requires at least one active LD block')
 
         cp = self._cp
-        self._stream_count = min(requested_streams, len(self._groups))
-        self._lane_groups = [[] for _ in range(self._stream_count)]
-        lane_work = [0] * self._stream_count
-        ranked_groups = sorted(
-            self._groups,
-            key=lambda group: (
-                int(group['precision'].shape[0]) *
-                int(group['precision'].shape[-1]) ** 3
-            ),
-            reverse=True,
+        factor_tasks = []
+        for group in self._groups:
+            count = int(group['precision'].shape[0])
+            if group['use_unbatched']:
+                factor_tasks.extend(
+                    (group, matrix_index)
+                    for matrix_index in range(count)
+                )
+            else:
+                factor_tasks.append((group, None))
+
+        self._factor_task_count = len(factor_tasks)
+        self._stream_count = min(requested_streams, self._factor_task_count)
+        solve_tasks = [
+            (group, matrix_index)
+            for group in self._groups
+            for matrix_index in range(int(group['precision'].shape[0]))
+        ]
+        self._solve_task_count = len(solve_tasks)
+        self._auxiliary_stream_count = min(
+            8, requested_streams, self._solve_task_count
         )
-        for group in ranked_groups:
-            lane = min(range(self._stream_count), key=lane_work.__getitem__)
-            self._lane_groups[lane].append(group)
-            lane_work[lane] += (
-                int(group['precision'].shape[0]) *
-                int(group['precision'].shape[-1]) ** 3
+        self._worker_stream_count = max(
+            self._stream_count, self._auxiliary_stream_count
+        )
+
+        def distribute(items, cost, lane_count):
+            lanes = [[] for _ in range(lane_count)]
+            lane_work = [0] * lane_count
+            for item in sorted(items, key=cost, reverse=True):
+                lane = min(
+                    range(lane_count), key=lane_work.__getitem__
+                )
+                lanes[lane].append(item)
+                lane_work[lane] += cost(item)
+            return lanes
+
+        def factor_cost(task):
+            group, matrix_index = task
+            size = int(group['precision'].shape[-1])
+            count = (
+                int(group['precision'].shape[0])
+                if matrix_index is None else 1
             )
+            return count * size ** 3
+
+        self._lane_factor_tasks = distribute(
+            factor_tasks, factor_cost, self._stream_count
+        )
+        self._lane_solve_tasks = distribute(
+            solve_tasks,
+            lambda task: int(task[0]['precision'].shape[-1]) ** 2,
+            self._auxiliary_stream_count,
+        )
+        self._lane_groups = distribute(
+            self._groups,
+            lambda group: (
+                int(group['precision'].shape[0]) *
+                int(group['precision'].shape[-1]) ** 2
+            ),
+            min(self._auxiliary_stream_count, len(self._groups)),
+        )
 
         self._lane_cublas_handles = []
         self._lane_cusolver_handles = []
         try:
             with self._device:
+                self._stream_kernel_module = cp.RawModule(
+                    code=_CUDA_STREAM_KERNEL_SOURCE,
+                    options=('--std=c++11',),
+                )
+                self._assemble_precision_kernel = (
+                    self._stream_kernel_module.get_function(
+                        'assemble_precision'
+                    )
+                )
+                self._scatter_beta_kernel = (
+                    self._stream_kernel_module.get_function('scatter_beta')
+                )
+                self._perturb_quad_kernel = (
+                    self._stream_kernel_module.get_function('perturb_quad')
+                )
+                self._kernel_threads = 256
                 self._streams = [
                     cp.cuda.Stream(non_blocking=True)
-                    for _ in range(self._stream_count)
+                    for _ in range(self._worker_stream_count)
                 ]
                 for stream in self._streams:
                     cublas_handle = self._cublas.create()
@@ -996,11 +1155,12 @@ class CudaStreamsBetaBackend(CudaHybridBetaBackend):
                     self._cusolver.setStream(cusolver_handle, stream.ptr)
 
                 self._lane_workspaces = []
-                for groups in self._lane_groups:
+                for tasks in self._lane_factor_tasks:
                     maximum_lwork = max(
                         (
                             int(group.get('single_lwork', 0))
-                            for group in groups
+                            for group, matrix_index in tasks
+                            if matrix_index is not None
                         ),
                         default=0,
                     )
@@ -1010,20 +1170,29 @@ class CudaStreamsBetaBackend(CudaHybridBetaBackend):
                     self._lane_workspaces.append(workspace)
                     self._resident_bytes += int(workspace.nbytes)
 
-                self._quad_groups = cp.empty(
-                    len(self._groups), dtype=self._cuda_dtype
+                matrix_count = sum(
+                    int(group['precision'].shape[0])
+                    for group in self._groups
                 )
-                for group_index, group in enumerate(self._groups):
-                    group['quad_result'] = self._quad_groups[
-                        group_index:group_index + 1
-                    ].reshape(())
-                self._resident_bytes += int(self._quad_groups.nbytes)
+                self._quad_matrices = cp.empty(
+                    matrix_count, dtype=self._cuda_dtype
+                )
+                matrix_start = 0
+                for group in self._groups:
+                    count = int(group['precision'].shape[0])
+                    group['quad_results'] = self._quad_matrices[
+                        matrix_start:matrix_start + count
+                    ]
+                    matrix_start += count
+                self._resident_bytes += int(self._quad_matrices.nbytes)
 
                 self._stream_boundaries = [
                     cp.cuda.Event() for _ in range(6)
                 ]
                 self._lane_completion = [
-                    [cp.cuda.Event() for _ in range(self._stream_count)]
+                    [cp.cuda.Event() for _ in range(
+                        self._worker_stream_count
+                    )]
                     for _ in range(5)
                 ]
         except Exception:
@@ -1044,17 +1213,17 @@ class CudaStreamsBetaBackend(CudaHybridBetaBackend):
             self._lane_cusolver_handles,
         )
 
-    def _dispatch_stage(self, stage_index, operation):
+    def _dispatch_stage(self, stage_index, lane_items, operation):
         default_stream = self._cp.cuda.get_current_stream()
-        for lane, (stream, groups) in enumerate(zip(
-                self._streams, self._lane_groups)):
+        for lane, (stream, items) in enumerate(zip(
+                self._streams, lane_items)):
             with stream:
                 stream.wait_event(self._stream_boundaries[stage_index])
-                for group in groups:
-                    operation(lane, group)
+                for item in items:
+                    operation(lane, item)
                 stream.record(self._lane_completion[stage_index][lane])
 
-        for event in self._lane_completion[stage_index]:
+        for event in self._lane_completion[stage_index][:len(lane_items)]:
             default_stream.wait_event(event)
         default_stream.record(self._stream_boundaries[stage_index + 1])
 
@@ -1082,27 +1251,48 @@ class CudaStreamsBetaBackend(CudaHybridBetaBackend):
             default_stream.record(self._stream_boundaries[0])
 
             def assemble_precision(_lane, group):
-                precision = group['precision']
-                cp.copyto(precision, group['ld'])
-                safe_indices = group['indices']
-                inverse_psi = cp.where(
-                    group['valid'],
-                    1.0 / self._psi_device[safe_indices],
-                    0.0,
+                entries = int(group['precision'].size)
+                blocks = (
+                    (entries + self._kernel_threads - 1) //
+                    self._kernel_threads
                 )
-                diagonal = group['diag']
-                precision[:, diagonal, diagonal] += inverse_psi
-
-            self._dispatch_stage(0, assemble_precision)
-
-            def factor(lane, group):
-                self._factor_group(
-                    group,
-                    self._lane_cusolver_handles[lane],
-                    self._lane_workspaces[lane],
+                self._assemble_precision_kernel(
+                    (blocks,),
+                    (self._kernel_threads,),
+                    (
+                        group['ld'],
+                        group['indices'],
+                        group['valid'],
+                        self._psi_device,
+                        group['precision'],
+                        np.uint64(entries),
+                        np.int32(group['precision'].shape[-1]),
+                    ),
                 )
 
-            self._dispatch_stage(1, factor)
+            self._dispatch_stage(
+                0, self._lane_groups, assemble_precision
+            )
+
+            def factor(lane, task):
+                group, matrix_index = task
+                if matrix_index is None:
+                    self._factor_group(
+                        group,
+                        self._lane_cusolver_handles[lane],
+                        self._lane_workspaces[lane],
+                    )
+                else:
+                    self._factor_matrix(
+                        group,
+                        matrix_index,
+                        self._lane_cusolver_handles[lane],
+                        self._lane_workspaces[lane],
+                    )
+
+            self._dispatch_stage(
+                1, self._lane_factor_tasks, factor
+            )
 
             if not self._potrf_checked:
                 for group_index, group in enumerate(self._groups):
@@ -1116,41 +1306,74 @@ class CudaStreamsBetaBackend(CudaHybridBetaBackend):
                             (group_index, first, int(info[first]))
                         )
 
-            def solve_first(lane, group):
-                cp.copyto(group['rhs'], group['beta_mrg'])
-                self._solve_group(
+            def solve_first(lane, task):
+                group, matrix_index = task
+                cp.copyto(
+                    group['rhs'][matrix_index],
+                    group['beta_mrg'][matrix_index],
+                )
+                self._solve_matrix(
                     group,
+                    matrix_index,
                     self._cublas.CUBLAS_OP_T,
                     self._lane_cublas_handles[lane],
                 )
 
-            self._dispatch_stage(2, solve_first)
+            self._dispatch_stage(
+                2, self._lane_solve_tasks, solve_first
+            )
 
             def perturb(_lane, group):
-                rhs = group['rhs']
-                rhs += (
-                    sd * noise[group['indices']][..., None] *
-                    group['valid'][..., None]
+                self._perturb_quad_kernel(
+                    (int(group['precision'].shape[0]),),
+                    (self._kernel_threads,),
+                    (
+                        group['rhs'],
+                        group['indices'],
+                        group['valid'],
+                        noise,
+                        np.float64(sd),
+                        group['quad_results'],
+                        np.int32(group['precision'].shape[-1]),
+                    ),
+                    shared_mem=(
+                        self._kernel_threads * self._host_dtype.itemsize
+                    ),
                 )
-                group['quad_result'][...] = cp.sum(rhs * rhs)
 
-            self._dispatch_stage(3, perturb)
+            self._dispatch_stage(3, self._lane_groups, perturb)
 
-            def solve_second(lane, group):
-                self._solve_group(
+            def solve_second(lane, task):
+                group, matrix_index = task
+                self._solve_matrix(
                     group,
+                    matrix_index,
                     self._cublas.CUBLAS_OP_N,
                     self._lane_cublas_handles[lane],
                 )
-                flat_valid = group['valid'].ravel()
-                self._beta_result[
-                    group['indices'].ravel()[flat_valid]
-                ] = group['rhs'][..., 0].ravel()[flat_valid]
+                entries = int(group['indices'].shape[-1])
+                blocks = (
+                    (entries + self._kernel_threads - 1) //
+                    self._kernel_threads
+                )
+                self._scatter_beta_kernel(
+                    (blocks,),
+                    (self._kernel_threads,),
+                    (
+                        group['rhs'][matrix_index],
+                        group['indices'][matrix_index],
+                        group['valid'][matrix_index],
+                        self._beta_result,
+                        np.uint64(entries),
+                    ),
+                )
 
-            self._dispatch_stage(4, solve_second)
+            self._dispatch_stage(
+                4, self._lane_solve_tasks, solve_second
+            )
 
             self._potrf_checked = True
-            self._beta_result[self._p] = cp.sum(self._quad_groups)
+            self._beta_result[self._p] = cp.sum(self._quad_matrices)
             result = cp.asnumpy(self._beta_result)
 
             if self._direct_profile_enabled:
@@ -1173,12 +1396,25 @@ class CudaStreamsBetaBackend(CudaHybridBetaBackend):
         return result[:self._p].reshape(-1, 1), float(result[self._p])
 
     def describe(self):
+        stream_word = 'stream' if self._stream_count == 1 else 'streams'
+        auxiliary_word = (
+            'stream' if self._auxiliary_stream_count == 1 else 'streams'
+        )
+        task_word = 'task' if self._factor_task_count == 1 else 'tasks'
         return (
-            'cuda:%d (exact FP64; %d concurrent streams, %d regular and '
-            '%d batched matrices; %.1f MiB static resident)' %
+            'cuda:%d (exact FP64; %d factorization %s, %d auxiliary %s; '
+            '%d independently scheduled factor %s and %d matrix solve '
+            'tasks; fused assembly/perturb/scatter; %d regular and %d '
+            'batched matrices; %.1f MiB static resident)' %
             (
                 self._device.id,
                 self._stream_count,
+                stream_word,
+                self._auxiliary_stream_count,
+                auxiliary_word,
+                self._factor_task_count,
+                task_word,
+                self._solve_task_count,
                 self._unbatched_matrices,
                 self._batched_matrices,
                 self._resident_bytes / (1024.0 * 1024.0),
