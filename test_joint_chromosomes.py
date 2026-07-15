@@ -253,6 +253,13 @@ class _FixedPsiBackend:
 
 
 class JointChromosomeSamplerTests(unittest.TestCase):
+    def test_joint_profile_label_compacts_consecutive_chromosomes(self):
+        partitions = [(chromosome, 0, 0) for chromosome in range(1, 23)]
+        self.assertEqual(
+            mcmc_gtb._profile_label(partitions, True),
+            'joint chr1-22',
+        )
+
     def test_one_chain_updates_global_parameters_and_splits_outputs(self):
         summary = _summary(1, ['rs1', 'rs2'])
         second = _summary(2, ['rs3', 'rs4', 'rs5'])

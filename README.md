@@ -99,6 +99,10 @@ using GWAS summary statistics and an external LD reference panel.
     [alternative download site](https://personal.broadinstitute.org/hhuang//public//PRS-CSx/Reference).
 
 - PRScs requires Python packages **scipy** (https://www.scipy.org/), **h5py** (https://www.h5py.org/) and **numba** (https://numba.pydata.org/) installed.
+
+- The optional CUDA backend requires **CuPy 14.1 or newer**, installed using
+  the CuPy package that matches the machine's existing CUDA runtime. It does
+  not require changing the NVIDIA driver or CUDA installation.
  
 - Once Python and its dependencies have been installed, running
 
@@ -110,7 +114,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -182,6 +186,27 @@ writes a potentially large uncompressed cache; later runs skip the original LD
 read, filtering, and eigendecomposition. No cache is read or written by
 default.
 
+- BACKEND (optional): `cpu` uses the exact FP64 LAPACK/BLAS implementation
+and is the default. `cuda` uses exact FP64 batched Cholesky and triangular
+solves through CuPy.
+
+- CUDA_DEVICE (optional): Zero-based CUDA device index. Default is 0.
+
+- CUDA_BUCKET_SIZE (optional): LD block sizes are rounded up to this interval
+for CUDA batching. Smaller values reduce padding while larger values may form
+denser batches. Default is 32.
+
+- LD_DIAGNOSTICS (optional): If True, report LD block sizes, CUDA padding,
+numerical rank, and retained condition estimates before sampling. Default is
+False.
+
+- LD_RANK_TOL (optional): Relative eigenvalue threshold used for the optional
+LD rank diagnostic. It does not truncate the exact Cholesky computation.
+Default is `1e-8`.
+
+- PROFILE (optional): If True, report warm-up and steady-state time spent in
+the beta, psi, and remaining MCMC stages. Default is False.
+
 - BETA_STD (optional): If True, return standardized posterior SNP effect sizes (i.e., effect sizes corresponding to standardized genotypes with zero mean and unit variance across subjects). If False, return per-allele posterior SNP effect sizes, calculated by properly weighting the posterior standardized effect sizes using allele frequencies estimated from the reference panel. Default is False.
 
 - WRITE_PSI (optional): If True, write variant-specific shrinkage estimates. Default is False.
@@ -243,6 +268,21 @@ Numba-compiled loop rather than making a Python call for every variant.
 Seeded runs explicitly seed Numba's independent random-number stream, and the
 compiled vector entry point is cached for reuse by later Python processes.
 Set `NUMBA_CACHE_DIR` to override Numba's cache location.
+
+### Experimental CUDA backend
+
+`--backend=cuda` keeps LD blocks resident on the selected GPU and performs the
+same FP64 conditional Gaussian beta update using batched Cholesky and
+triangular solves. Per iteration, only the O(number of variants) `psi` vector
+is copied to the device and the sampled beta vector plus its quadratic form is
+copied back. Chromosomes remain independent jobs unless
+`--joint_chromosomes=True` is also selected.
+
+For a quick synthetic CPU/CUDA comparison:
+
+```
+python3 benchmark_gpu.py --backends=cpu,cuda --n-iter=100
+```
 
 
 ## Test Data

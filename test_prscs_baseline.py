@@ -48,6 +48,37 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['beta_std'], 'FALSE')
         self.assertEqual(parameters['write_psi'], 'FALSE')
         self.assertEqual(parameters['write_pst'], 'FALSE')
+        self.assertEqual(parameters['backend'], 'cpu')
+        self.assertEqual(parameters['cuda_device'], 0)
+        self.assertEqual(parameters['cuda_bucket_size'], 32)
+        self.assertEqual(parameters['ld_diagnostics'], 'FALSE')
+        self.assertEqual(parameters['profile'], 'FALSE')
+
+    def test_cuda_backend_and_diagnostic_options_are_parsed(self):
+        argv = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+            '--backend=CUDA',
+            '--cuda_device=1',
+            '--cuda_bucket_size=64',
+            '--ld_diagnostics=true',
+            '--ld_rank_tol=1e-7',
+            '--profile=true',
+        ]
+        with mock.patch.object(sys, 'argv', argv):
+            with contextlib.redirect_stdout(io.StringIO()):
+                parameters = PRScs.parse_param()
+
+        self.assertEqual(parameters['backend'], 'cuda')
+        self.assertEqual(parameters['cuda_device'], 1)
+        self.assertEqual(parameters['cuda_bucket_size'], 64)
+        self.assertEqual(parameters['ld_diagnostics'], 'TRUE')
+        self.assertEqual(parameters['ld_rank_tol'], 1e-7)
+        self.assertEqual(parameters['profile'], 'TRUE')
 
 
 class SummaryStatisticsCharacterizationTests(unittest.TestCase):

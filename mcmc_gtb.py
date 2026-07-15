@@ -6,6 +6,8 @@ Markov Chain Monte Carlo (MCMC) sampler for polygenic prediction with continuous
 """
 
 
+import time
+
 import numpy as np
 from beta_backend import make_beta_backend
 from psi_backend import make_psi_backend
@@ -36,9 +38,29 @@ def _chromosome_partitions(chrom, chromosome_slices, p):
     return partitions
 
 
+def _profile_label(partitions, joint_chromosomes):
+    if not joint_chromosomes:
+        return 'chr%d' % partitions[0][0]
+
+    chromosomes = [partition[0] for partition in partitions]
+    ranges = []
+    start = chromosomes[0]
+    end = start
+    for chromosome in chromosomes[1:]:
+        if chromosome == end + 1:
+            end = chromosome
+            continue
+        ranges.append(str(start) if start == end else '%d-%d' % (start, end))
+        start = chromosome
+        end = chromosome
+    ranges.append(str(start) if start == end else '%d-%d' % (start, end))
+    return 'joint chr%s' % ','.join(ranges)
+
+
 def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
          thin, chrom, out_dir, beta_std, write_psi, write_pst, seed,
-         chromosome_slices=None):
+         chromosome_slices=None, backend='cpu', cuda_device=0,
+         cuda_bucket_size=32, profile='FALSE'):
     print('... MCMC ...')
 
     # seed
@@ -52,6 +74,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     p = len(sst_dict['SNP'])
     joint_chromosomes = chromosome_slices is not None
     partitions = _chromosome_partitions(chrom, chromosome_slices, p)
+    profile_label = _profile_label(partitions, joint_chromosomes)
 
     if joint_chromosomes:
         print(
@@ -80,19 +103,29 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     phi_est = 0.0
 
     beta_sampler = make_beta_backend(
-        'cpu', ld_blk, blk_size, beta_mrg, n
+        backend, ld_blk, blk_size, beta_mrg, n,
+        seed=seed, cuda_device=cuda_device,
+        cuda_bucket_size=cuda_bucket_size,
     )
     print('... beta backend: %s ...' % beta_sampler.describe())
     psi_sampler = make_psi_backend('cpu', p, seed=seed)
     print('... psi backend: %s ...' % psi_sampler.describe())
+    profile = str(profile).upper() == 'TRUE'
+    profile_beta = 0.0
+    profile_psi = 0.0
+    profile_total = 0.0
+    profile_iterations = 0
 
     # MCMC
     pp = 0
     for itr in range(1,n_iter+1):
+        iteration_start = time.perf_counter()
         if itr % 100 == 0:
             print('--- iter-' + str(itr) + ' ---')
 
+        beta_start = time.perf_counter()
         beta, quad = beta_sampler.sample(psi, sigma)
+        beta_elapsed = time.perf_counter() - beta_start
 
         s1 = float((beta * beta_mrg).sum())
         s2 = float((beta**2 / psi).sum())
@@ -105,6 +138,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
 
         delta = np.random.gamma(a+b, 1.0/(psi+phi))
 
+        psi_start = time.perf_counter()
         psi_sampler.sample(
             psi[:, 0],
             float(a - 0.5),
@@ -113,6 +147,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
             float(sigma),
             int(n),
         )
+        psi_elapsed = time.perf_counter() - psi_start
         
         psi[psi>1] = 1.0
 
@@ -130,6 +165,32 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
             if write_pst == 'TRUE':
                 beta_pst[:,[pp]] = beta
                 pp += 1
+
+        iteration_elapsed = time.perf_counter() - iteration_start
+        if profile:
+            if itr > 1:
+                profile_beta += beta_elapsed
+                profile_psi += psi_elapsed
+                profile_total += iteration_elapsed
+                profile_iterations += 1
+            if itr == 1:
+                print(
+                    '[PROFILE %s] iter 1 warm-up: beta %.4fs, psi %.4fs, '
+                    'total %.4fs' %
+                    (profile_label, beta_elapsed, psi_elapsed,
+                     iteration_elapsed)
+                )
+            elif itr % 10 == 0 or itr == n_iter:
+                other = profile_total - profile_beta - profile_psi
+                print(
+                    '[PROFILE %s] steady-state mean over %d iter: beta '
+                    '%.4fs, psi %.4fs, other %.4fs, total %.4fs' %
+                    (profile_label, profile_iterations,
+                     profile_beta/profile_iterations,
+                     profile_psi/profile_iterations,
+                     other/profile_iterations,
+                     profile_total/profile_iterations)
+                )
 
     # convert standardized beta to per-allele beta
     if beta_std == 'FALSE':
