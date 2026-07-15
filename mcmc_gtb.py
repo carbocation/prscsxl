@@ -7,8 +7,8 @@ Markov Chain Monte Carlo (MCMC) sampler for polygenic prediction with continuous
 
 
 import numpy as np
-import gigrnd
 from beta_backend import make_beta_backend
+from psi_backend import make_psi_backend
 
 
 def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom, out_dir, beta_std, write_psi, write_pst, seed):
@@ -46,6 +46,8 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
         'cpu', ld_blk, blk_size, beta_mrg, n
     )
     print('... beta backend: %s ...' % beta_sampler.describe())
+    psi_sampler = make_psi_backend('cpu', p, seed=seed)
+    print('... psi backend: %s ...' % psi_sampler.describe())
 
     # MCMC
     pp = 0
@@ -66,16 +68,14 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
 
         delta = np.random.gamma(a+b, 1.0/(psi+phi))
 
-        for jj in range(p):
-            delta_val = delta[jj, 0].item()
-            beta_val  = beta[jj,  0].item()
-
-            # compute ψ_j as a float and store back into the (p,1) array
-            psi[jj, 0] = gigrnd.gigrnd(
-                float(a - 0.5),
-                float(2.0 * delta_val),
-                float(n * (beta_val**2) / sigma)
-            )
+        psi_sampler.sample(
+            psi[:, 0],
+            float(a - 0.5),
+            delta[:, 0],
+            beta[:, 0],
+            float(sigma),
+            int(n),
+        )
         
         psi[psi>1] = 1.0
 
@@ -132,4 +132,3 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
         print('... Estimated global shrinkage parameter: %1.2e ...' % phi_est )
 
     print('... Done ...')
-

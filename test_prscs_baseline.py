@@ -141,8 +141,14 @@ class McmcCharacterizationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output = os.path.join(directory, 'result')
+            psi_sampler = mock.Mock()
+            psi_sampler.describe.return_value = 'cpu test double'
+            psi_sampler.sample.side_effect = (
+                lambda out, *_args: out.fill(0.5)
+            )
             with mock.patch.object(
-                    mcmc_gtb.gigrnd, 'gigrnd', return_value=0.5):
+                    mcmc_gtb, 'make_psi_backend',
+                    return_value=psi_sampler):
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
                         'ignore',
