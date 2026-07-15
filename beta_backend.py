@@ -3,6 +3,8 @@
 """Implementations of the PRS-CS beta block update."""
 
 
+import time
+
 import numpy as np
 from scipy.linalg.blas import dtrsv
 from scipy.linalg.lapack import dpotrf
@@ -469,17 +471,244 @@ class CudaBetaBackend:
         )
 
 
+class CudaDirectBetaBackend(CudaBetaBackend):
+    """Preallocated direct cuSOLVER/cuBLAS FP64 batched implementation."""
+
+    name = 'cuda'
+
+    def __init__(self, *args, profile='FALSE', **kwargs):
+        self._direct_profile_enabled = str(profile).upper() == 'TRUE'
+        super().__init__(*args, **kwargs)
+        try:
+            from cupy.cuda import cublas, device
+            from cupy_backends.cuda.libs import cusolver
+        except ImportError as exc:
+            raise RuntimeError(
+                "The CUDA beta backend requires CuPy's cuBLAS and "
+                'cuSOLVER bindings'
+            ) from exc
+
+        cp = self._cp
+        self._cublas = cublas
+        self._cusolver = cusolver
+        self._one = np.array(1.0, dtype=np.float64)
+        self._potrf_checked = False
+        self._direct_profile_calls = 0
+        self._direct_profile_host_total = 0.0
+        self._direct_profile_stage_totals = np.zeros(6)
+
+        def matrix_pointers(array):
+            count = array.shape[0]
+            step = int(array[0].nbytes)
+            start = int(array.data.ptr)
+            return cp.arange(
+                start,
+                start + step * count,
+                step,
+                dtype=cp.uintp,
+            )
+
+        with self._device:
+            self._cublas_handle = device.get_cublas_handle()
+            self._cusolver_handle = device.get_cusolver_handle()
+            if self._direct_profile_enabled:
+                self._direct_profile_preamble = (
+                    cp.cuda.Event(), cp.cuda.Event()
+                )
+            for group in self._groups:
+                precision = group['ld'].copy()
+                rhs = cp.empty_like(group['beta_mrg'])
+                direct_arrays = {
+                    'precision': precision,
+                    'rhs': rhs,
+                    'precision_ptrs': matrix_pointers(precision),
+                    'rhs_ptrs': matrix_pointers(rhs),
+                    'potrf_info': cp.empty(
+                        precision.shape[0], dtype=cp.int32
+                    ),
+                }
+                group.update(direct_arrays)
+                if self._direct_profile_enabled:
+                    group['direct_profile_events'] = [
+                        cp.cuda.Event() for _ in range(6)
+                    ]
+                self._resident_bytes += sum(
+                    int(value.nbytes) for value in direct_arrays.values()
+                )
+
+    def _triangular_solve(self, group, trans):
+        size = group['precision'].shape[-1]
+        count = group['precision'].shape[0]
+        self._cublas.dtrsmBatched(
+            self._cublas_handle,
+            self._cublas.CUBLAS_SIDE_LEFT,
+            self._cublas.CUBLAS_FILL_MODE_UPPER,
+            trans,
+            self._cublas.CUBLAS_DIAG_NON_UNIT,
+            size,
+            1,
+            self._one.ctypes.data,
+            group['precision_ptrs'].data.ptr,
+            size,
+            group['rhs_ptrs'].data.ptr,
+            size,
+            count,
+        )
+
+    def sample(self, psi, sigma):
+        """Draw beta with fixed device workspaces and in-place CUDA calls."""
+        cp = self._cp
+        profile_started = (
+            time.perf_counter() if self._direct_profile_enabled else None
+        )
+        psi = np.asarray(psi, dtype=np.float64).reshape(-1)
+        if psi.size != self._p:
+            raise ValueError('psi and beta_mrg must have equal length')
+
+        with self._device:
+            if self._direct_profile_enabled:
+                self._direct_profile_preamble[0].record()
+            self._psi_device.set(psi)
+            quad = cp.zeros((), dtype=cp.float64)
+            sd = float(np.sqrt(float(sigma) / self._n_gwas))
+            noise = self._rng.standard_normal(self._p, dtype=cp.float64)
+            if self._direct_profile_enabled:
+                self._direct_profile_preamble[1].record()
+
+            for group_index, group in enumerate(self._groups):
+                events = group.get('direct_profile_events')
+                if events is not None:
+                    events[0].record()
+                precision = group['precision']
+                cp.copyto(precision, group['ld'])
+                safe_indices = group['indices']
+                inverse_psi = cp.where(
+                    group['valid'],
+                    1.0 / self._psi_device[safe_indices],
+                    0.0,
+                )
+                diagonal = group['diag']
+                precision[:, diagonal, diagonal] += inverse_psi
+                if events is not None:
+                    events[1].record()
+
+                size = precision.shape[-1]
+                count = precision.shape[0]
+                self._cusolver.dpotrfBatched(
+                    self._cusolver_handle,
+                    self._cublas.CUBLAS_FILL_MODE_UPPER,
+                    size,
+                    group['precision_ptrs'].data.ptr,
+                    size,
+                    group['potrf_info'].data.ptr,
+                    count,
+                )
+                if events is not None:
+                    events[2].record()
+                if not self._potrf_checked:
+                    info = cp.asnumpy(group['potrf_info'])
+                    failures = np.flatnonzero(info)
+                    if failures.size:
+                        first = int(failures[0])
+                        raise RuntimeError(
+                            'CUDA Cholesky failed in size bucket %d, '
+                            'matrix %d with info=%d' %
+                            (group_index, first, int(info[first]))
+                        )
+
+                rhs = group['rhs']
+                cp.copyto(rhs, group['beta_mrg'])
+                # Row-major L is seen by cuBLAS as column-major U=L.T.
+                # U.T y=b therefore performs the first solve L y=b.
+                self._triangular_solve(
+                    group, self._cublas.CUBLAS_OP_T
+                )
+                if events is not None:
+                    events[3].record()
+                rhs += (
+                    sd * noise[group['indices']][..., None] *
+                    group['valid'][..., None]
+                )
+                quad += cp.sum(rhs * rhs)
+                if events is not None:
+                    events[4].record()
+
+                # U beta=y is the second solve L.T beta=y.
+                self._triangular_solve(
+                    group, self._cublas.CUBLAS_OP_N
+                )
+                flat_valid = group['valid'].ravel()
+                self._beta_result[
+                    group['indices'].ravel()[flat_valid]
+                ] = rhs[..., 0].ravel()[flat_valid]
+                if events is not None:
+                    events[5].record()
+
+            self._potrf_checked = True
+            self._beta_result[self._p] = quad
+            result = cp.asnumpy(self._beta_result)
+
+            if self._direct_profile_enabled:
+                stages = np.zeros(6)
+                stages[0] = cp.cuda.get_elapsed_time(
+                    *self._direct_profile_preamble
+                ) / 1000.0
+                for group in self._groups:
+                    events = group['direct_profile_events']
+                    for stage in range(1, 6):
+                        stages[stage] += cp.cuda.get_elapsed_time(
+                            events[stage - 1], events[stage]
+                        ) / 1000.0
+                if self._direct_profile_calls:
+                    self._direct_profile_stage_totals += stages
+                    self._direct_profile_host_total += (
+                        time.perf_counter() - profile_started
+                    )
+                self._direct_profile_calls += 1
+
+        return result[:self._p].reshape(-1, 1), float(result[self._p])
+
+    def describe(self):
+        return (
+            'cuda:%d (preallocated FP64 potrfBatched + '
+            'trsmBatched; %d size buckets; %.1f MiB static resident)' %
+            (
+                self._device.id,
+                len(self._groups),
+                self._resident_bytes / (1024.0 * 1024.0),
+            )
+        )
+
+    def profile_summary(self):
+        measured = self._direct_profile_calls - 1
+        if not self._direct_profile_enabled:
+            return 'CUDA stages: profiling disabled'
+        if measured < 1:
+            return 'CUDA stages: no steady-state draws recorded'
+        means = 1000.0 * self._direct_profile_stage_totals / measured
+        host_mean = 1000.0 * self._direct_profile_host_total / measured
+        unattributed = max(host_mean - float(means.sum()), 0.0)
+        return (
+            'CUDA stages (mean): preamble %.3f ms, '
+            'precision %.3f ms, potrf %.3f ms, solve-1 %.3f ms, '
+            'perturb/quad %.3f ms, solve-2/scatter %.3f ms, '
+            'host/unattributed %.3f ms' %
+            (*means, unattributed)
+        )
+
+
 def make_beta_backend(backend, ld_blocks, block_sizes, beta_mrg, n_gwas,
-                      seed=None, cuda_device=0, cuda_bucket_size=32):
+                      seed=None, cuda_device=0, cuda_bucket_size=32,
+                      profile='FALSE'):
     """Construct a beta sampler without importing CUDA on CPU runs."""
     backend = str(backend).lower()
     if backend == 'cpu':
         return CpuBetaBackend(ld_blocks, block_sizes, beta_mrg, n_gwas)
     if backend == 'cuda':
-        return CudaBetaBackend(
+        return CudaDirectBetaBackend(
             ld_blocks, block_sizes, beta_mrg, n_gwas,
             seed=seed, cuda_device=cuda_device,
-            cuda_bucket_size=cuda_bucket_size,
+            cuda_bucket_size=cuda_bucket_size, profile=profile,
         )
     raise ValueError(
         "unknown beta backend %r; expected 'cpu' or 'cuda'" % backend

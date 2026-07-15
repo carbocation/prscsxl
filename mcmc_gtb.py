@@ -107,6 +107,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
         backend, ld_blk, blk_size, beta_mrg, n,
         seed=seed, cuda_device=cuda_device,
         cuda_bucket_size=cuda_bucket_size,
+        profile=profile,
     )
     print('... beta backend: %s ...' % beta_sampler.describe())
     psi_sampler = make_psi_backend(
@@ -271,6 +272,9 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     if phi_updt == True:
         print('... Estimated global shrinkage parameter: %1.2e ...' % phi_est )
 
+    if profile and hasattr(beta_sampler, 'profile_summary'):
+        print('[PROFILE %s] %s' %
+              (profile_label, beta_sampler.profile_summary()))
     if profile and hasattr(psi_sampler, 'profile_summary'):
         print('[PROFILE %s] %s' %
               (profile_label, psi_sampler.profile_summary()))
