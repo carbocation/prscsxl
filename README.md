@@ -1,3 +1,113 @@
+# PRScs-XL
+
+**PRScs-XL** is a performance-focused extension of PRS-CS that preserves the
+PRS-CS model while: 
+1) adding support for joint genome-wide ("*extra large*") MCMC analyses with
+shared global parameters and
+2) adding support for CPU and GPU *acceleration*. (Hence "*-XL*".)
+
+### Optional joint-chromosome fitting
+
+Original PRS-CS fits each selected chromosome in a separate MCMC chain. Each
+chain therefore has its own residual variance and, when it is inferred, its own
+global shrinkage parameter. In contrast, PRScs-XL can optionally fit all
+selected chromosomes in one chain with a single shared residual variance and
+global shrinkage parameter. LD blocks remain chromosome-local, so joint fitting
+does not introduce cross-chromosome LD. Output files are still written
+separately by chromosome.
+
+### Peformance improvements
+
+Performance improvements fall into three main categories:
+
+- **Loading:** faster joint input parsing and optional persistent caching of
+  filtered, projected LD matrices.
+- **Universal execution improvements:** optimized exact FP64 LAPACK/BLAS beta
+  sampling and a fused, cached Numba local-shrinkage sampler. Roughly 3-6x
+  faster thanks to BLAS/LAPACK usage.
+- **GPU execution:** optional exact FP64 CUDA beta sampling with adaptive
+  batching and concurrent scheduling, plus fused CUDA shrinkage sampling.
+  Roughly 6-9x faster on an NVIDIA A100.
+
+## Installing PRScs-XL
+
+Install the required CPU dependencies:
+
+```bash
+python3 -m pip install numpy scipy h5py numba
+```
+
+If running on a machine with an NVIDIA GPU, use `nvidia-smi` to identify the
+CUDA major version supported by its driver, then install exactly one matching
+CuPy package:
+
+```bash
+# For CUDA 12:
+python3 -m pip install "cupy-cuda12x[ctk]>=14.1"
+
+# For CUDA 13:
+python3 -m pip install "cupy-cuda13x[ctk]>=14.1"
+```
+
+Then clone and enter the repository:
+
+```bash
+git clone https://github.com/carbocation/prscsxl.git
+cd prscsxl
+python3 PRScs.py --help
+```
+
+PRScs-XL runs directly from the cloned repository. No GPU dependency is required
+for CPU use.
+
+## Running with CUDA
+
+CPU execution is the default. To run both the beta update and the
+local-shrinkage update on an NVIDIA GPU, select the CUDA backend. Example for
+chromosome 22:
+
+```bash
+python3 PRScs.py \
+  --ref_dir=PATH_TO_REFERENCE \
+  --bim_prefix=VALIDATION_BIM_PREFIX \
+  --sst_file=SUM_STATS_FILE \
+  --n_gwas=GWAS_SAMPLE_SIZE \
+  --chrom=22 \
+  --backend=cuda \
+  --cuda_device=0 \
+  --out_dir=OUTPUT_PREFIX
+```
+
+`--backend=cuda` accelerates both beta and local-shrinkage sampling.
+`--cuda_device` is a zero-based GPU index and defaults to `0`.
+
+## Joint multi-chromosome fitting
+
+Joint fitting is opt-in because it changes the statistical model and will not
+produce the same posterior draws as separate chromosome fits. To fit all 22
+autosomes jointly:
+
+```bash
+python3 PRScs.py \
+  --ref_dir=PATH_TO_REFERENCE \
+  --bim_prefix=VALIDATION_BIM_PREFIX \
+  --sst_file=SUM_STATS_FILE \
+  --n_gwas=GWAS_SAMPLE_SIZE \
+  --chrom=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22 \
+  --joint_chromosomes=TRUE \
+  --ld_cache_dir=PATH_TO_LD_CACHE \
+  --out_dir=OUTPUT_PREFIX
+```
+
+`--ld_cache_dir` is optional but recommended for repeated genome-wide runs.
+Joint fitting works with either CPU or CUDA execution. To run the joint model
+on a GPU, add `--backend=cuda` to the command above. The GPU must have enough
+memory to hold the selected chromosomes' LD blocks at the same time.
+
+The original PRS-CS README is preserved below.
+
+---
+
 # PRS-CS
 
 **PRS-CS** is a Python based command line tool that infers posterior SNP effect sizes under continuous shrinkage (CS) priors
@@ -114,7 +224,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --psi_backend=cpu|cuda --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -186,9 +296,12 @@ writes a potentially large uncompressed cache; later runs skip the original LD
 read, filtering, and eigendecomposition. No cache is read or written by
 default.
 
-- BACKEND (optional): `cpu` uses the exact FP64 LAPACK/BLAS implementation
-and is the default. `cuda` uses exact FP64 batched Cholesky and triangular
-solves through preallocated cuSOLVER and cuBLAS workspaces.
+- BACKEND (optional): `cpu` uses exact FP64 LAPACK/BLAS beta sampling and the
+fused Numba GIG sampler, and is the default. `cuda` uses exact FP64 batched
+Cholesky and triangular solves through preallocated cuSOLVER and cuBLAS
+workspaces, and generates each gamma-distributed `delta` and its dependent GIG
+`psi` draw in one CUDA kernel. Seeded runs are reproducible within a fixed
+backend, but CPU and CUDA random streams differ.
 
 - CUDA_DEVICE (optional): Zero-based CUDA device index. Default is 0.
 
@@ -200,12 +313,6 @@ denser batches. Default is 32.
 streams. Lighter assembly, solve, perturbation, and scatter work uses at most
 eight auxiliary streams. Tasks are assigned greedily by estimated work.
 Default is 4.
-
-- PSI_BACKEND (optional): `cpu` uses the fused Numba GIG sampler and is the
-default. `cuda` generates each gamma-distributed `delta` and its dependent GIG
-`psi` draw in one CUDA kernel per MCMC iteration using independent Philox
-4x32-10 streams. Seeded runs are reproducible within a fixed backend, but
-backend random streams differ.
 
 - CUDA_GIG_MAX_ROUNDS (optional): Maximum vector rejection rounds for the
 CUDA GIG sampler. The sampler fails explicitly instead of returning incomplete
@@ -288,9 +395,10 @@ Set `NUMBA_CACHE_DIR` to override Numba's cache location.
 
 `--backend=cuda` keeps LD blocks resident on the selected GPU and performs the
 same FP64 conditional Gaussian beta update using batched Cholesky and
-triangular solves. Per iteration, only the O(number of variants) `psi` vector
-is copied to the device and the sampled beta vector plus its quadratic form is
-copied back. Chromosomes remain independent jobs unless
+triangular solves. It also generates each gamma-distributed `delta` and its
+dependent GIG `psi` draw in one CUDA kernel per MCMC iteration. Per iteration,
+only O(number of variants) state is transferred between host and device.
+Chromosomes remain independent jobs unless
 `--joint_chromosomes=True` is also selected.
 
 The CUDA backend builds factorization and right-hand-side workspaces and
@@ -318,9 +426,6 @@ For a quick synthetic CPU/CUDA comparison:
 ```
 python3 benchmark_gpu.py --backends=cpu,cuda --n-iter=100
 ```
-
-Add `--psi-backend=cuda` to fuse both local-shrinkage draws in one CUDA kernel
-and avoid the intermediate host `delta` vector.
 
 
 ## Test Data

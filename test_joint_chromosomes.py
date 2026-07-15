@@ -288,6 +288,7 @@ class JointChromosomeSamplerTests(unittest.TestCase):
                                 1, 0, 1, [1, 2], output, 'TRUE',
                                 'TRUE', 'FALSE', 123,
                                 chromosome_slices=[(1, 0, 2), (2, 2, 5)],
+                                backend='cuda',
                             )
 
             # Sigma, the auxiliary global-scale draw, and phi are sampled
@@ -295,7 +296,9 @@ class JointChromosomeSamplerTests(unittest.TestCase):
             self.assertEqual(gamma.call_count, 3)
             self.assertAlmostEqual(gamma.call_args_list[2].args[0], 3.0)
             self.assertAlmostEqual(gamma.call_args_list[2].args[1], 1.0 / 7.0)
+            self.assertEqual(beta_factory.call_args.args[0], 'cuda')
             psi_factory.assert_called_once()
+            self.assertEqual(psi_factory.call_args.args[0], 'cuda')
             self.assertEqual(psi_factory.call_args.args[1], 5)
 
             chromosome_one = output + '_pst_eff_a1_b0.5_phiauto_chr1.txt'

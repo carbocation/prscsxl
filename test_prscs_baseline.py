@@ -53,7 +53,6 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['cuda_device'], 0)
         self.assertEqual(parameters['cuda_bucket_size'], 32)
         self.assertEqual(parameters['cuda_streams'], 4)
-        self.assertEqual(parameters['psi_backend'], 'cpu')
         self.assertEqual(parameters['cuda_gig_max_rounds'], 1000)
         self.assertEqual(parameters['ld_diagnostics'], 'FALSE')
         self.assertEqual(parameters['profile'], 'FALSE')
@@ -69,7 +68,6 @@ class CommandLineCharacterizationTests(unittest.TestCase):
             '--backend=CUDA',
             '--cuda_device=1',
             '--cuda_bucket_size=64',
-            '--psi_backend=CUDA',
             '--cuda_gig_max_rounds=77',
             '--ld_diagnostics=true',
             '--ld_rank_tol=1e-7',
@@ -82,48 +80,31 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['backend'], 'cuda')
         self.assertEqual(parameters['cuda_device'], 1)
         self.assertEqual(parameters['cuda_bucket_size'], 64)
-        self.assertEqual(parameters['psi_backend'], 'cuda')
         self.assertEqual(parameters['cuda_gig_max_rounds'], 77)
         self.assertEqual(parameters['ld_diagnostics'], 'TRUE')
         self.assertEqual(parameters['ld_rank_tol'], 1e-7)
         self.assertEqual(parameters['profile'], 'TRUE')
 
-    def test_implementation_stage_cuda_names_are_not_public_backends(self):
-        base_argv = [
+    def test_unknown_backend_is_rejected(self):
+        argv = [
             'PRScs.py',
             '--ref_dir=/tmp/ldblk_ukbb_eur',
             '--bim_prefix=/tmp/target',
             '--sst_file=/tmp/sumstats',
             '--n_gwas=1000',
             '--out_dir=/tmp/output',
+            '--backend=warp-drive',
         ]
-        beta_names = (
-            'cuda-direct', 'cuda-hybrid', 'cuda-streams',
-            'cuda-adaptive', 'cuda-fp32', 'cuda-pcg',
-        )
-        for backend in beta_names:
-            with self.subTest(backend=backend):
-                with mock.patch.object(
-                        sys, 'argv', base_argv + ['--backend=' + backend]):
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        with self.assertRaises(SystemExit) as exit_context:
-                            PRScs.parse_param()
-                self.assertEqual(exit_context.exception.code, 2)
-
-        for backend in ('cuda-raw', 'cuda-fused'):
-            with self.subTest(psi_backend=backend):
-                with mock.patch.object(
-                        sys, 'argv',
-                        base_argv + ['--psi_backend=' + backend]):
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        with self.assertRaises(SystemExit) as exit_context:
-                            PRScs.parse_param()
-                self.assertEqual(exit_context.exception.code, 2)
+        with mock.patch.object(sys, 'argv', argv):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as exit_context:
+                    PRScs.parse_param()
+        self.assertEqual(exit_context.exception.code, 2)
 
     def test_benchmark_accepts_only_cpu_and_cuda_backends(self):
         with mock.patch.object(
                 sys, 'argv',
-                ['benchmark_gpu.py', '--backends=cuda-adaptive']):
+                ['benchmark_gpu.py', '--backends=warp-drive']):
             arguments = benchmark_gpu.parse_args()
         with self.assertRaisesRegex(ValueError, 'unknown backend'):
             benchmark_gpu.validate_args(arguments)

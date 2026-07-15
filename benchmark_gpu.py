@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Synthetic within-chromosome benchmark for PRS-CS beta backends."""
+"""Synthetic within-chromosome benchmark for PRS-CS CPU/CUDA backends."""
 
 
 import argparse
@@ -28,9 +28,6 @@ def parse_args():
     parser.add_argument('--cuda-device', type=int, default=0)
     parser.add_argument('--cuda-bucket-size', type=int, default=32)
     parser.add_argument('--cuda-streams', type=int, default=4)
-    parser.add_argument(
-        '--psi-backend', choices=('cpu', 'cuda'), default='cpu'
-    )
     parser.add_argument('--cuda-gig-max-rounds', type=int, default=1000)
     return parser.parse_args()
 
@@ -122,7 +119,6 @@ def main():
                 cuda_bucket_size=args.cuda_bucket_size,
                 cuda_streams=args.cuda_streams,
                 profile='TRUE',
-                psi_backend=args.psi_backend,
                 cuda_gig_max_rounds=args.cuda_gig_max_rounds,
             )
             timings[backend] = time.perf_counter() - started
