@@ -98,7 +98,7 @@ using GWAS summary statistics and an external LD reference panel.
     For regions that don't have access to Dropbox, reference panels can be downloaded from the
     [alternative download site](https://personal.broadinstitute.org/hhuang//public//PRS-CSx/Reference).
 
-- PRScs requires Python packages **scipy** (https://www.scipy.org/) and **h5py** (https://www.h5py.org/) installed.
+- PRScs requires Python packages **scipy** (https://www.scipy.org/), **h5py** (https://www.h5py.org/) and **numba** (https://numba.pydata.org/) installed.
  
 - Once Python and its dependencies have been installed, running
 
@@ -202,6 +202,12 @@ underlying FP64 LAPACK Cholesky and BLAS triangular-solve routines directly.
 This preserves the original conditional Gaussian update while avoiding
 repeated temporary matrices and generic SciPy wrapper overhead.
 
+The CPU local-shrinkage update fills the complete `psi` vector inside one
+Numba-compiled loop rather than making a Python call for every variant.
+Seeded runs explicitly seed Numba's independent random-number stream, and the
+compiled vector entry point is cached for reuse by later Python processes.
+Set `NUMBA_CACHE_DIR` to override Numba's cache location.
+
 
 ## Test Data
 
@@ -216,4 +222,3 @@ python PRScs.py --ref_dir=path_to_ref/ldblk_1kg_eur --bim_prefix=path_to_bim/tes
 ## Support
 
 Please direct questions or bug reports to Tian Ge (tge1@mgh.harvard.edu).
-
