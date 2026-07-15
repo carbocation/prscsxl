@@ -11,7 +11,8 @@ Reference: T Ge, CY Chen, Y Ni, YCA Feng, JW Smoller. Polygenic Prediction via B
 Usage:
 python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR
                 [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR
-                 --chrom=CHROM --joint_chromosomes=TRUE|FALSE --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED]
+                 --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH
+                 --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED]
 
 """
 
@@ -27,11 +28,12 @@ import mcmc_gtb
 
 def parse_param():
     long_opts_list = ['ref_dir=', 'bim_prefix=', 'sst_file=', 'a=', 'b=', 'phi=', 'n_gwas=',
-                      'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'joint_chromosomes=', 'beta_std=', 'write_psi=', 'write_pst=', 'seed=', 'help']
+                      'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'joint_chromosomes=', 'ld_cache_dir=', 'beta_std=', 'write_psi=', 'write_pst=', 'seed=', 'help']
 
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None,
                   'n_iter': 1000, 'n_burnin': 500, 'thin': 5, 'out_dir': None, 'chrom': range(1,23),
                   'joint_chromosomes': 'FALSE',
+                  'ld_cache_dir': None,
                   'beta_std': 'FALSE', 'write_psi': 'FALSE', 'write_pst': 'FALSE', 'seed': None}
 
     print('\n')
@@ -61,6 +63,7 @@ def parse_param():
             elif opt == "--out_dir": param_dict['out_dir'] = arg
             elif opt == "--chrom": param_dict['chrom'] = arg.split(',')
             elif opt == "--joint_chromosomes": param_dict['joint_chromosomes'] = arg.upper()
+            elif opt == "--ld_cache_dir": param_dict['ld_cache_dir'] = arg
             elif opt == "--beta_std": param_dict['beta_std'] = arg.upper()
             elif opt == "--write_psi": param_dict['write_psi'] = arg.upper()
             elif opt == "--write_pst": param_dict['write_pst'] = arg.upper()
@@ -112,7 +115,8 @@ def _load_chromosome(param_dict, chrom):
         ref_dict, vld_dict, param_dict['sst_file'], param_dict['n_gwas']
     )
     ld_blk, blk_size = parse_genet.parse_ldblk(
-        param_dict['ref_dir'], sst_dict, chrom
+        param_dict['ref_dir'], sst_dict, chrom,
+        cache_dir=param_dict['ld_cache_dir'],
     )
     return {
         'chrom': chrom,
@@ -145,6 +149,7 @@ def _load_joint_chromosomes(param_dict, chromosomes):
         ld_blk, blk_size = parse_genet.parse_ldblk(
             param_dict['ref_dir'], sst_dict, chromosome,
             report_timing=True,
+            cache_dir=param_dict['ld_cache_dir'],
         )
         chromosome_inputs.append({
             'chrom': chromosome,

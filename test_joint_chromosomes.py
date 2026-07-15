@@ -42,12 +42,14 @@ class JointChromosomeCliTests(unittest.TestCase):
             '--n_gwas=1000',
             '--out_dir=/tmp/output',
             '--joint_chromosomes=true',
+            '--ld_cache_dir=/tmp/ld-cache',
         ]
         with mock.patch.object(sys, 'argv', argv):
             with contextlib.redirect_stdout(io.StringIO()):
                 parameters = PRScs.parse_param()
 
         self.assertEqual(parameters['joint_chromosomes'], 'TRUE')
+        self.assertEqual(parameters['ld_cache_dir'], '/tmp/ld-cache')
 
     def test_invalid_joint_chromosomes_value_is_rejected(self):
         argv = [
