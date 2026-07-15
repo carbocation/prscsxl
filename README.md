@@ -188,7 +188,7 @@ default.
 
 - BACKEND (optional): `cpu` uses the exact FP64 LAPACK/BLAS implementation
 and is the default. `cuda` uses exact FP64 batched Cholesky and triangular
-solves through CuPy.
+solves through preallocated cuSOLVER and cuBLAS workspaces.
 
 - CUDA_DEVICE (optional): Zero-based CUDA device index. Default is 0.
 
@@ -287,6 +287,11 @@ triangular solves. Per iteration, only the O(number of variants) `psi` vector
 is copied to the device and the sampled beta vector plus its quadratic form is
 copied back. Chromosomes remain independent jobs unless
 `--joint_chromosomes=True` is also selected.
+
+The CUDA backend builds factorization and right-hand-side workspaces and
+device pointer arrays once, then invokes FP64 `potrfBatched` and
+`trsmBatched` directly. This avoids generic-wrapper copies without changing
+the conditional Gaussian calculation.
 
 For a quick synthetic CPU/CUDA comparison:
 
