@@ -60,7 +60,8 @@ def _profile_label(partitions, joint_chromosomes):
 def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
          thin, chrom, out_dir, beta_std, write_psi, write_pst, seed,
          chromosome_slices=None, backend='cpu', cuda_device=0,
-         cuda_bucket_size=32, profile='FALSE'):
+         cuda_bucket_size=32, profile='FALSE', psi_backend='cpu',
+         cuda_gig_max_rounds=1000):
     print('... MCMC ...')
 
     # seed
@@ -108,7 +109,10 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
         cuda_bucket_size=cuda_bucket_size,
     )
     print('... beta backend: %s ...' % beta_sampler.describe())
-    psi_sampler = make_psi_backend('cpu', p, seed=seed)
+    psi_sampler = make_psi_backend(
+        psi_backend, p, seed=seed, cuda_device=cuda_device,
+        cuda_gig_max_rounds=cuda_gig_max_rounds,
+    )
     print('... psi backend: %s ...' % psi_sampler.describe())
     profile = str(profile).upper() == 'TRUE'
     profile_beta = 0.0
@@ -252,5 +256,9 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     # print estimated phi
     if phi_updt == True:
         print('... Estimated global shrinkage parameter: %1.2e ...' % phi_est )
+
+    if profile and hasattr(psi_sampler, 'profile_summary'):
+        print('[PROFILE %s] %s' %
+              (profile_label, psi_sampler.profile_summary()))
 
     print('... Done ...')

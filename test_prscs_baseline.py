@@ -51,6 +51,8 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['backend'], 'cpu')
         self.assertEqual(parameters['cuda_device'], 0)
         self.assertEqual(parameters['cuda_bucket_size'], 32)
+        self.assertEqual(parameters['psi_backend'], 'cpu')
+        self.assertEqual(parameters['cuda_gig_max_rounds'], 1000)
         self.assertEqual(parameters['ld_diagnostics'], 'FALSE')
         self.assertEqual(parameters['profile'], 'FALSE')
 
@@ -65,6 +67,8 @@ class CommandLineCharacterizationTests(unittest.TestCase):
             '--backend=CUDA',
             '--cuda_device=1',
             '--cuda_bucket_size=64',
+            '--psi_backend=CUDA',
+            '--cuda_gig_max_rounds=77',
             '--ld_diagnostics=true',
             '--ld_rank_tol=1e-7',
             '--profile=true',
@@ -76,6 +80,8 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['backend'], 'cuda')
         self.assertEqual(parameters['cuda_device'], 1)
         self.assertEqual(parameters['cuda_bucket_size'], 64)
+        self.assertEqual(parameters['psi_backend'], 'cuda')
+        self.assertEqual(parameters['cuda_gig_max_rounds'], 77)
         self.assertEqual(parameters['ld_diagnostics'], 'TRUE')
         self.assertEqual(parameters['ld_rank_tol'], 1e-7)
         self.assertEqual(parameters['profile'], 'TRUE')
