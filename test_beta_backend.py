@@ -10,6 +10,7 @@ from scipy import linalg
 
 from beta_backend import (
     CpuBetaBackend,
+    CudaAdaptiveStreamsBetaBackend,
     CudaBetaBackend,
     CudaDirectBetaBackend,
     CudaHybridBetaBackend,
@@ -159,6 +160,22 @@ class CpuBetaBackendTests(unittest.TestCase):
             (4**3 + 8**3 + 8**3) / float(3**3 + 5**3 + 7**3),
         )
 
+    def test_adaptive_layout_builds_minimum_dense_batches(self):
+        sizes = list(range(1, 17))
+        diagnostics = ld_layout_diagnostics(
+            sizes, bucket_size=1, adaptive=True
+        )
+        self.assertAlmostEqual(
+            diagnostics['padding_memory_ratio'],
+            (8 * 8**2 + 8 * 16**2) /
+            float(sum(size**2 for size in sizes)),
+        )
+        self.assertAlmostEqual(
+            diagnostics['padding_cubic_ratio'],
+            (8 * 8**3 + 8 * 16**3) /
+            float(sum(size**3 for size in sizes)),
+        )
+
     def test_rank_diagnostics_detect_low_rank_ld(self):
         block = np.diag([3.0, 1.0, 1e-12])
         diagnostics = diagnose_ld_blocks(
@@ -174,15 +191,43 @@ class CpuBetaBackendTests(unittest.TestCase):
 
 @unittest.skipUnless(_cuda_available(), 'CuPy and a CUDA device are required')
 class CudaBetaBackendTests(unittest.TestCase):
-    def test_factory_selects_streamed_cuda_backend(self):
+    def test_factory_selects_adaptive_cuda_backend(self):
         blocks, sizes, beta_mrg, _ = _inputs()
         self.assertIsInstance(
             make_beta_backend(
                 'cuda', blocks, sizes, beta_mrg, 1000,
                 seed=123, cuda_bucket_size=4,
             ),
-            CudaStreamsBetaBackend,
+            CudaAdaptiveStreamsBetaBackend,
         )
+
+    def test_adaptive_backend_matches_fixed_stream_draw(self):
+        rng = np.random.default_rng(23)
+        sizes = list(range(1, 9))
+        blocks = []
+        for size in sizes:
+            values = rng.normal(size=(size, size))
+            blocks.append(values @ values.T / size + np.eye(size))
+        beta_mrg = rng.normal(size=(sum(sizes), 1))
+        psi = rng.uniform(0.2, 1.2, size=(sum(sizes), 1))
+        fixed = CudaStreamsBetaBackend(
+            blocks, sizes, beta_mrg, 1000,
+            seed=4321, cuda_bucket_size=1, cuda_streams=4,
+        )
+        adaptive = CudaAdaptiveStreamsBetaBackend(
+            blocks, sizes, beta_mrg, 1000,
+            seed=4321, cuda_bucket_size=1, cuda_streams=4,
+        )
+
+        expected_beta, expected_quad = fixed.sample(psi, 0.8)
+        actual_beta, actual_quad = adaptive.sample(psi, 0.8)
+
+        np.testing.assert_allclose(
+            actual_beta, expected_beta, rtol=1e-10, atol=1e-10
+        )
+        self.assertAlmostEqual(actual_quad, expected_quad, places=10)
+        self.assertIn('1 adaptive size clusters', adaptive.describe())
+        self.assertIn('8 batched matrices', adaptive.describe())
 
     def test_direct_backend_reports_cholesky_failure(self):
         backend = CudaDirectBetaBackend(

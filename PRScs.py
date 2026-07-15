@@ -294,6 +294,7 @@ def _print_ld_diagnostics(param_dict, chromosome_input):
         chromosome_input['ld_blk'], chromosome_input['blk_size'],
         bucket_size=param_dict['cuda_bucket_size'],
         rank_rtol=param_dict['ld_rank_tol'],
+        adaptive=param_dict['backend'] == 'cuda',
     )
     print(format_ld_diagnostics(diagnostics))
 
