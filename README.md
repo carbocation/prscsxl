@@ -197,6 +197,11 @@ export OMP_NUM_THREADS=$N_THREADS
 ```
 For example, to use a single thread for the computation, set `N_THREADS=1`.
 
+The CPU beta update uses preallocated column-major workspaces and calls the
+underlying FP64 LAPACK Cholesky and BLAS triangular-solve routines directly.
+This preserves the original conditional Gaussian update while avoiding
+repeated temporary matrices and generic SciPy wrapper overhead.
+
 
 ## Test Data
 
@@ -211,5 +216,4 @@ python PRScs.py --ref_dir=path_to_ref/ldblk_1kg_eur --bim_prefix=path_to_bim/tes
 ## Support
 
 Please direct questions or bug reports to Tian Ge (tge1@mgh.harvard.edu).
-
 
