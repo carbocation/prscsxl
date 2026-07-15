@@ -16,7 +16,7 @@ global shrinkage parameter. LD blocks remain chromosome-local, so joint fitting
 does not introduce cross-chromosome LD. Output files are still written
 separately by chromosome.
 
-### Peformance improvements
+### Performance improvements
 
 Performance improvements fall into three main categories:
 
