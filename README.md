@@ -197,9 +197,9 @@ for CUDA batching. Smaller values reduce padding while larger values may form
 denser batches. Default is 32.
 
 - PSI_BACKEND (optional): `cpu` uses the fused Numba GIG sampler and is the
-default. `cuda` uses a vectorized Devroye rejection sampler driven by CuPy's
-device random-number generator. Seeded runs are reproducible within a fixed
-backend, but CPU and CUDA random streams differ.
+default. `cuda` runs the complete Devroye rejection loop in one CUDA kernel per
+MCMC iteration using independent Philox 4x32-10 streams. Seeded runs are
+reproducible within a fixed backend, but backend random streams differ.
 
 - CUDA_GIG_MAX_ROUNDS (optional): Maximum vector rejection rounds for the
 CUDA GIG sampler. The sampler fails explicitly instead of returning incomplete
@@ -293,8 +293,7 @@ For a quick synthetic CPU/CUDA comparison:
 python3 benchmark_gpu.py --backends=cpu,cuda --n-iter=100
 ```
 
-Add `--psi-backend=cuda` to include the vectorized CUDA local-shrinkage
-sampler in both benchmark runs.
+Add `--psi-backend=cuda` for the single-kernel CUDA local-shrinkage sampler.
 
 
 ## Test Data
