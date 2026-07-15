@@ -17,6 +17,7 @@ import numpy as np
 from scipy import linalg
 
 import PRScs
+import benchmark_gpu
 import mcmc_gtb
 import parse_genet
 
@@ -51,6 +52,7 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['backend'], 'cpu')
         self.assertEqual(parameters['cuda_device'], 0)
         self.assertEqual(parameters['cuda_bucket_size'], 32)
+        self.assertEqual(parameters['cuda_streams'], 4)
         self.assertEqual(parameters['psi_backend'], 'cpu')
         self.assertEqual(parameters['cuda_gig_max_rounds'], 1000)
         self.assertEqual(parameters['ld_diagnostics'], 'FALSE')
@@ -85,6 +87,46 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['ld_diagnostics'], 'TRUE')
         self.assertEqual(parameters['ld_rank_tol'], 1e-7)
         self.assertEqual(parameters['profile'], 'TRUE')
+
+    def test_implementation_stage_cuda_names_are_not_public_backends(self):
+        base_argv = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+        ]
+        beta_names = (
+            'cuda-direct', 'cuda-hybrid', 'cuda-streams',
+            'cuda-adaptive', 'cuda-fp32', 'cuda-pcg',
+        )
+        for backend in beta_names:
+            with self.subTest(backend=backend):
+                with mock.patch.object(
+                        sys, 'argv', base_argv + ['--backend=' + backend]):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit) as exit_context:
+                            PRScs.parse_param()
+                self.assertEqual(exit_context.exception.code, 2)
+
+        for backend in ('cuda-raw', 'cuda-fused'):
+            with self.subTest(psi_backend=backend):
+                with mock.patch.object(
+                        sys, 'argv',
+                        base_argv + ['--psi_backend=' + backend]):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit) as exit_context:
+                            PRScs.parse_param()
+                self.assertEqual(exit_context.exception.code, 2)
+
+    def test_benchmark_accepts_only_cpu_and_cuda_backends(self):
+        with mock.patch.object(
+                sys, 'argv',
+                ['benchmark_gpu.py', '--backends=cuda-adaptive']):
+            arguments = benchmark_gpu.parse_args()
+        with self.assertRaisesRegex(ValueError, 'unknown backend'):
+            benchmark_gpu.validate_args(arguments)
 
 
 class SummaryStatisticsCharacterizationTests(unittest.TestCase):
