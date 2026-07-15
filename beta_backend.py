@@ -4,10 +4,26 @@
 
 
 import time
+import weakref
 
 import numpy as np
 from scipy.linalg.blas import dtrsv
 from scipy.linalg.lapack import dpotrf
+
+
+def _destroy_stream_handles(cublas, cusolver, cublas_handles,
+                            cusolver_handles):
+    """Best-effort release of CUDA library handles owned by one backend."""
+    for handle in cublas_handles:
+        try:
+            cublas.destroy(handle)
+        except Exception:
+            pass
+    for handle in cusolver_handles:
+        try:
+            cusolver.destroy(handle)
+        except Exception:
+            pass
 
 
 def _block_layout(ld_blocks, block_sizes, variant_count):
@@ -540,10 +556,15 @@ class CudaDirectBetaBackend(CudaBetaBackend):
                 )
 
     def _triangular_solve(self, group, trans):
+        self._triangular_solve_with_handle(
+            group, trans, self._cublas_handle
+        )
+
+    def _triangular_solve_with_handle(self, group, trans, handle):
         size = group['precision'].shape[-1]
         count = group['precision'].shape[0]
         self._cublas.dtrsmBatched(
-            self._cublas_handle,
+            handle,
             self._cublas.CUBLAS_SIDE_LEFT,
             self._cublas.CUBLAS_FILL_MODE_UPPER,
             trans,
@@ -749,12 +770,16 @@ class CudaHybridBetaBackend(CudaDirectBetaBackend):
                     cp.cuda.Event() for _ in range(6)
                 ]
 
-    def _factor_group(self, group):
+    def _factor_group(self, group, cusolver_handle=None, workspace=None):
+        if cusolver_handle is None:
+            cusolver_handle = self._cusolver_handle
+        if workspace is None:
+            workspace = self._single_workspace
         size = int(group['precision'].shape[-1])
         count = int(group['precision'].shape[0])
         if not group['use_unbatched']:
             self._potrf_batched(
-                self._cusolver_handle,
+                cusolver_handle,
                 self._cublas.CUBLAS_FILL_MODE_UPPER,
                 size,
                 group['precision_ptrs'].data.ptr,
@@ -766,26 +791,30 @@ class CudaHybridBetaBackend(CudaDirectBetaBackend):
 
         for matrix_index in range(count):
             self._potrf_single(
-                self._cusolver_handle,
+                cusolver_handle,
                 self._cublas.CUBLAS_FILL_MODE_UPPER,
                 size,
                 group['precision'][matrix_index].data.ptr,
                 size,
-                self._single_workspace.data.ptr,
+                workspace.data.ptr,
                 group['single_lwork'],
                 group['potrf_info'][matrix_index:].data.ptr,
             )
 
-    def _solve_group(self, group, trans):
+    def _solve_group(self, group, trans, cublas_handle=None):
+        if cublas_handle is None:
+            cublas_handle = self._cublas_handle
         if not group['use_unbatched']:
-            self._triangular_solve(group, trans)
+            self._triangular_solve_with_handle(
+                group, trans, cublas_handle
+            )
             return
 
         size = int(group['precision'].shape[-1])
         count = int(group['precision'].shape[0])
         for matrix_index in range(count):
             self._trsm_single(
-                self._cublas_handle,
+                cublas_handle,
                 self._cublas.CUBLAS_SIDE_LEFT,
                 self._cublas.CUBLAS_FILL_MODE_UPPER,
                 trans,
@@ -917,18 +946,259 @@ class CudaHybridBetaBackend(CudaDirectBetaBackend):
         )
 
 
+class CudaStreamsBetaBackend(CudaHybridBetaBackend):
+    """Exact FP64 backend overlapping independent buckets on CUDA streams."""
+
+    name = 'cuda'
+
+    def __init__(self, *args, **kwargs):
+        requested_streams = int(kwargs.pop('cuda_streams', 4))
+        if requested_streams < 1:
+            raise ValueError('cuda_streams must be at least 1')
+        super().__init__(*args, **kwargs)
+        if not self._groups:
+            raise ValueError('CUDA requires at least one active LD block')
+
+        cp = self._cp
+        self._stream_count = min(requested_streams, len(self._groups))
+        self._lane_groups = [[] for _ in range(self._stream_count)]
+        lane_work = [0] * self._stream_count
+        ranked_groups = sorted(
+            self._groups,
+            key=lambda group: (
+                int(group['precision'].shape[0]) *
+                int(group['precision'].shape[-1]) ** 3
+            ),
+            reverse=True,
+        )
+        for group in ranked_groups:
+            lane = min(range(self._stream_count), key=lane_work.__getitem__)
+            self._lane_groups[lane].append(group)
+            lane_work[lane] += (
+                int(group['precision'].shape[0]) *
+                int(group['precision'].shape[-1]) ** 3
+            )
+
+        self._lane_cublas_handles = []
+        self._lane_cusolver_handles = []
+        try:
+            with self._device:
+                self._streams = [
+                    cp.cuda.Stream(non_blocking=True)
+                    for _ in range(self._stream_count)
+                ]
+                for stream in self._streams:
+                    cublas_handle = self._cublas.create()
+                    self._lane_cublas_handles.append(cublas_handle)
+                    cusolver_handle = self._cusolver.create()
+                    self._lane_cusolver_handles.append(cusolver_handle)
+                    self._cublas.setStream(cublas_handle, stream.ptr)
+                    self._cusolver.setStream(cusolver_handle, stream.ptr)
+
+                self._lane_workspaces = []
+                for groups in self._lane_groups:
+                    maximum_lwork = max(
+                        (
+                            int(group.get('single_lwork', 0))
+                            for group in groups
+                        ),
+                        default=0,
+                    )
+                    workspace = cp.empty(
+                        maximum_lwork, dtype=self._cuda_dtype
+                    )
+                    self._lane_workspaces.append(workspace)
+                    self._resident_bytes += int(workspace.nbytes)
+
+                self._quad_groups = cp.empty(
+                    len(self._groups), dtype=self._cuda_dtype
+                )
+                for group_index, group in enumerate(self._groups):
+                    group['quad_result'] = self._quad_groups[
+                        group_index:group_index + 1
+                    ].reshape(())
+                self._resident_bytes += int(self._quad_groups.nbytes)
+
+                self._stream_boundaries = [
+                    cp.cuda.Event() for _ in range(6)
+                ]
+                self._lane_completion = [
+                    [cp.cuda.Event() for _ in range(self._stream_count)]
+                    for _ in range(5)
+                ]
+        except Exception:
+            _destroy_stream_handles(
+                self._cublas,
+                self._cusolver,
+                self._lane_cublas_handles,
+                self._lane_cusolver_handles,
+            )
+            raise
+
+        self._handle_finalizer = weakref.finalize(
+            self,
+            _destroy_stream_handles,
+            self._cublas,
+            self._cusolver,
+            self._lane_cublas_handles,
+            self._lane_cusolver_handles,
+        )
+
+    def _dispatch_stage(self, stage_index, operation):
+        default_stream = self._cp.cuda.get_current_stream()
+        for lane, (stream, groups) in enumerate(zip(
+                self._streams, self._lane_groups)):
+            with stream:
+                stream.wait_event(self._stream_boundaries[stage_index])
+                for group in groups:
+                    operation(lane, group)
+                stream.record(self._lane_completion[stage_index][lane])
+
+        for event in self._lane_completion[stage_index]:
+            default_stream.wait_event(event)
+        default_stream.record(self._stream_boundaries[stage_index + 1])
+
+    def sample(self, psi, sigma):
+        """Draw beta while overlapping independent block computations."""
+        cp = self._cp
+        profile_started = (
+            time.perf_counter() if self._direct_profile_enabled else None
+        )
+        psi = np.asarray(psi, dtype=self._host_dtype).reshape(-1)
+        if psi.size != self._p:
+            raise ValueError('psi and beta_mrg must have equal length')
+
+        with self._device:
+            default_stream = cp.cuda.get_current_stream()
+            if self._direct_profile_enabled:
+                default_stream.record(self._direct_profile_preamble[0])
+            self._psi_device.set(psi)
+            sd = float(np.sqrt(float(sigma) / self._n_gwas))
+            noise = self._rng.standard_normal(
+                self._p, dtype=self._cuda_dtype
+            )
+            if self._direct_profile_enabled:
+                default_stream.record(self._direct_profile_preamble[1])
+            default_stream.record(self._stream_boundaries[0])
+
+            def assemble_precision(_lane, group):
+                precision = group['precision']
+                cp.copyto(precision, group['ld'])
+                safe_indices = group['indices']
+                inverse_psi = cp.where(
+                    group['valid'],
+                    1.0 / self._psi_device[safe_indices],
+                    0.0,
+                )
+                diagonal = group['diag']
+                precision[:, diagonal, diagonal] += inverse_psi
+
+            self._dispatch_stage(0, assemble_precision)
+
+            def factor(lane, group):
+                self._factor_group(
+                    group,
+                    self._lane_cusolver_handles[lane],
+                    self._lane_workspaces[lane],
+                )
+
+            self._dispatch_stage(1, factor)
+
+            if not self._potrf_checked:
+                for group_index, group in enumerate(self._groups):
+                    info = cp.asnumpy(group['potrf_info'])
+                    failures = np.flatnonzero(info)
+                    if failures.size:
+                        first = int(failures[0])
+                        raise RuntimeError(
+                            'CUDA Cholesky failed in size bucket %d, '
+                            'matrix %d with info=%d' %
+                            (group_index, first, int(info[first]))
+                        )
+
+            def solve_first(lane, group):
+                cp.copyto(group['rhs'], group['beta_mrg'])
+                self._solve_group(
+                    group,
+                    self._cublas.CUBLAS_OP_T,
+                    self._lane_cublas_handles[lane],
+                )
+
+            self._dispatch_stage(2, solve_first)
+
+            def perturb(_lane, group):
+                rhs = group['rhs']
+                rhs += (
+                    sd * noise[group['indices']][..., None] *
+                    group['valid'][..., None]
+                )
+                group['quad_result'][...] = cp.sum(rhs * rhs)
+
+            self._dispatch_stage(3, perturb)
+
+            def solve_second(lane, group):
+                self._solve_group(
+                    group,
+                    self._cublas.CUBLAS_OP_N,
+                    self._lane_cublas_handles[lane],
+                )
+                flat_valid = group['valid'].ravel()
+                self._beta_result[
+                    group['indices'].ravel()[flat_valid]
+                ] = group['rhs'][..., 0].ravel()[flat_valid]
+
+            self._dispatch_stage(4, solve_second)
+
+            self._potrf_checked = True
+            self._beta_result[self._p] = cp.sum(self._quad_groups)
+            result = cp.asnumpy(self._beta_result)
+
+            if self._direct_profile_enabled:
+                stages = np.zeros(6)
+                stages[0] = cp.cuda.get_elapsed_time(
+                    *self._direct_profile_preamble
+                ) / 1000.0
+                for stage in range(1, 6):
+                    stages[stage] = cp.cuda.get_elapsed_time(
+                        self._stream_boundaries[stage - 1],
+                        self._stream_boundaries[stage],
+                    ) / 1000.0
+                if self._direct_profile_calls:
+                    self._direct_profile_stage_totals += stages
+                    self._direct_profile_host_total += (
+                        time.perf_counter() - profile_started
+                    )
+                self._direct_profile_calls += 1
+
+        return result[:self._p].reshape(-1, 1), float(result[self._p])
+
+    def describe(self):
+        return (
+            'cuda:%d (exact FP64; %d concurrent streams, %d regular and '
+            '%d batched matrices; %.1f MiB static resident)' %
+            (
+                self._device.id,
+                self._stream_count,
+                self._unbatched_matrices,
+                self._batched_matrices,
+                self._resident_bytes / (1024.0 * 1024.0),
+            )
+        )
+
+
 def make_beta_backend(backend, ld_blocks, block_sizes, beta_mrg, n_gwas,
                       seed=None, cuda_device=0, cuda_bucket_size=32,
-                      profile='FALSE'):
+                      cuda_streams=4, profile='FALSE'):
     """Construct a beta sampler without importing CUDA on CPU runs."""
     backend = str(backend).lower()
     if backend == 'cpu':
         return CpuBetaBackend(ld_blocks, block_sizes, beta_mrg, n_gwas)
     if backend == 'cuda':
-        return CudaHybridBetaBackend(
+        return CudaStreamsBetaBackend(
             ld_blocks, block_sizes, beta_mrg, n_gwas,
             seed=seed, cuda_device=cuda_device,
-            cuda_bucket_size=cuda_bucket_size, profile=profile,
+            cuda_bucket_size=cuda_bucket_size,
+            cuda_streams=cuda_streams, profile=profile,
         )
     raise ValueError(
         "unknown beta backend %r; expected 'cpu' or 'cuda'" % backend

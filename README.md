@@ -114,7 +114,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --psi_backend=cpu|cuda --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --psi_backend=cpu|cuda --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -195,6 +195,10 @@ solves through preallocated cuSOLVER and cuBLAS workspaces.
 - CUDA_BUCKET_SIZE (optional): LD block sizes are rounded up to this interval
 for CUDA batching. Smaller values reduce padding while larger values may form
 denser batches. Default is 32.
+
+- CUDA_STREAMS (optional): Maximum number of concurrent CUDA streams used to
+overlap independent padded-size buckets. Buckets are assigned greedily by
+estimated Cholesky work. Default is 4.
 
 - PSI_BACKEND (optional): `cpu` uses the fused Numba GIG sampler and is the
 default. `cuda` generates each gamma-distributed `delta` and its dependent GIG
@@ -297,6 +301,11 @@ Real LD panels can have only one or two blocks in most padded-size buckets.
 For buckets containing fewer than eight matrices, the CUDA backend uses
 ordinary `potrf` and `trsm` calls; denser buckets retain the batched routines.
 This occupancy-aware dispatch preserves the exact FP64 transition.
+
+Independent buckets are assigned to separate non-blocking CUDA streams, each
+with its own cuSOLVER handle, cuBLAS handle, and factorization workspace. This
+allows real panels containing many large sparse buckets to overlap work that
+does not individually saturate the GPU.
 
 For a quick synthetic CPU/CUDA comparison:
 

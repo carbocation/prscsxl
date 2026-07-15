@@ -60,7 +60,7 @@ def _profile_label(partitions, joint_chromosomes):
 def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
          thin, chrom, out_dir, beta_std, write_psi, write_pst, seed,
          chromosome_slices=None, backend='cpu', cuda_device=0,
-         cuda_bucket_size=32, profile='FALSE', psi_backend='cpu',
+         cuda_bucket_size=32, cuda_streams=4, profile='FALSE', psi_backend='cpu',
          cuda_gig_max_rounds=1000):
     print('... MCMC ...')
 
@@ -107,6 +107,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
         backend, ld_blk, blk_size, beta_mrg, n,
         seed=seed, cuda_device=cuda_device,
         cuda_bucket_size=cuda_bucket_size,
+        cuda_streams=cuda_streams,
         profile=profile,
     )
     print('... beta backend: %s ...' % beta_sampler.describe())

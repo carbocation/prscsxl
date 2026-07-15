@@ -27,6 +27,7 @@ def parse_args():
     parser.add_argument('--thin', type=int, default=2)
     parser.add_argument('--cuda-device', type=int, default=0)
     parser.add_argument('--cuda-bucket-size', type=int, default=32)
+    parser.add_argument('--cuda-streams', type=int, default=4)
     parser.add_argument(
         '--psi-backend', choices=('cpu', 'cuda'), default='cpu'
     )
@@ -47,6 +48,8 @@ def validate_args(args):
         raise ValueError('n-burnin must be in [0, n-iter)')
     if args.thin < 1:
         raise ValueError('thin must be positive')
+    if args.cuda_streams < 1:
+        raise ValueError('cuda-streams must be positive')
     return backends
 
 
@@ -117,6 +120,7 @@ def main():
                 backend=backend,
                 cuda_device=args.cuda_device,
                 cuda_bucket_size=args.cuda_bucket_size,
+                cuda_streams=args.cuda_streams,
                 profile='TRUE',
                 psi_backend=args.psi_backend,
                 cuda_gig_max_rounds=args.cuda_gig_max_rounds,
