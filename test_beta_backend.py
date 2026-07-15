@@ -12,6 +12,7 @@ from beta_backend import (
     CpuBetaBackend,
     CudaBetaBackend,
     CudaDirectBetaBackend,
+    CudaHybridBetaBackend,
     diagnose_ld_blocks,
     format_ld_diagnostics,
     ld_layout_diagnostics,
@@ -172,14 +173,14 @@ class CpuBetaBackendTests(unittest.TestCase):
 
 @unittest.skipUnless(_cuda_available(), 'CuPy and a CUDA device are required')
 class CudaBetaBackendTests(unittest.TestCase):
-    def test_factory_selects_preallocated_cuda_backend(self):
+    def test_factory_selects_occupancy_aware_cuda_backend(self):
         blocks, sizes, beta_mrg, _ = _inputs()
         self.assertIsInstance(
             make_beta_backend(
                 'cuda', blocks, sizes, beta_mrg, 1000,
                 seed=123, cuda_bucket_size=4,
             ),
-            CudaDirectBetaBackend,
+            CudaHybridBetaBackend,
         )
 
     def test_direct_backend_reports_cholesky_failure(self):
@@ -223,6 +224,60 @@ class CudaBetaBackendTests(unittest.TestCase):
         )
         self.assertAlmostEqual(actual_quad, expected_quad, places=10)
         self.assertIn('potrfBatched', direct.describe())
+
+    def test_hybrid_backend_matches_direct_cuda_draw(self):
+        blocks, sizes, beta_mrg, psi = _inputs()
+        sigma = 0.7
+        direct = CudaDirectBetaBackend(
+            blocks,
+            sizes,
+            beta_mrg,
+            1000,
+            seed=123,
+            cuda_bucket_size=4,
+        )
+        hybrid = CudaHybridBetaBackend(
+            blocks,
+            sizes,
+            beta_mrg,
+            1000,
+            seed=123,
+            cuda_bucket_size=4,
+        )
+
+        expected_beta, expected_quad = direct.sample(psi, sigma)
+        actual_beta, actual_quad = hybrid.sample(psi, sigma)
+
+        np.testing.assert_allclose(
+            actual_beta, expected_beta, rtol=1e-10, atol=1e-10
+        )
+        self.assertAlmostEqual(actual_quad, expected_quad, places=10)
+        self.assertIn('regular potrf/trsm for 3 matrices', hybrid.describe())
+
+    def test_hybrid_backend_keeps_dense_buckets_batched(self):
+        blocks = [np.eye(2)] * 8
+        backend = CudaHybridBetaBackend(
+            blocks,
+            [2] * len(blocks),
+            np.ones((2 * len(blocks), 1)),
+            1000,
+            seed=123,
+            cuda_bucket_size=1,
+        )
+
+        self.assertIn('batched for 8 matrices in 1 buckets', backend.describe())
+
+    def test_hybrid_backend_reports_cholesky_failure(self):
+        backend = CudaHybridBetaBackend(
+            [-2.0 * np.eye(2)],
+            [2],
+            np.ones((2, 1)),
+            1000,
+            seed=123,
+            cuda_bucket_size=1,
+        )
+        with self.assertRaisesRegex(RuntimeError, 'CUDA Cholesky failed'):
+            backend.sample(np.ones((2, 1)), 1.0)
 
     def test_irregular_padded_blocks_have_correct_quadratic_form(self):
         blocks, sizes, beta_mrg, psi = _inputs()

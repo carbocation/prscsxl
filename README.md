@@ -293,6 +293,11 @@ device pointer arrays once, then invokes FP64 `potrfBatched` and
 `trsmBatched` directly. This avoids generic-wrapper copies without changing
 the conditional Gaussian calculation.
 
+Real LD panels can have only one or two blocks in most padded-size buckets.
+For buckets containing fewer than eight matrices, the CUDA backend uses
+ordinary `potrf` and `trsm` calls; denser buckets retain the batched routines.
+This occupancy-aware dispatch preserves the exact FP64 transition.
+
 For a quick synthetic CPU/CUDA comparison:
 
 ```
