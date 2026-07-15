@@ -8,7 +8,22 @@ import unittest
 import numpy as np
 from scipy import linalg
 
-from beta_backend import CpuBetaBackend, make_beta_backend
+from beta_backend import (
+    CpuBetaBackend,
+    CudaBetaBackend,
+    diagnose_ld_blocks,
+    format_ld_diagnostics,
+    ld_layout_diagnostics,
+    make_beta_backend,
+)
+
+
+def _cuda_available():
+    try:
+        import cupy as cp
+        return cp.cuda.runtime.getDeviceCount() > 0
+    except Exception:
+        return False
 
 
 def _inputs():
@@ -125,6 +140,74 @@ class CpuBetaBackendTests(unittest.TestCase):
         blocks, sizes, beta_mrg, _ = _inputs()
         with self.assertRaisesRegex(ValueError, 'unknown beta backend'):
             make_beta_backend('quantum', blocks, sizes, beta_mrg, 1000)
+
+    def test_layout_diagnostics_measure_padding_cost(self):
+        diagnostics = ld_layout_diagnostics(
+            [3, 0, 5, 7], bucket_size=4
+        )
+        self.assertEqual(diagnostics['active_blocks'], 3)
+        self.assertEqual(diagnostics['variants'], 15)
+        self.assertAlmostEqual(
+            diagnostics['padding_memory_ratio'],
+            (4**2 + 8**2 + 8**2) / float(3**2 + 5**2 + 7**2),
+        )
+        self.assertAlmostEqual(
+            diagnostics['padding_cubic_ratio'],
+            (4**3 + 8**3 + 8**3) / float(3**3 + 5**3 + 7**3),
+        )
+
+    def test_rank_diagnostics_detect_low_rank_ld(self):
+        block = np.diag([3.0, 1.0, 1e-12])
+        diagnostics = diagnose_ld_blocks(
+            [block], [3], bucket_size=1, rank_rtol=1e-8
+        )
+        self.assertEqual(diagnostics['rank_min'], 2)
+        self.assertEqual(diagnostics['rank_max'], 2)
+        self.assertAlmostEqual(diagnostics['rank_fraction_median'], 2/3)
+        self.assertIn(
+            'numerical rank', format_ld_diagnostics(diagnostics)
+        )
+
+
+@unittest.skipUnless(_cuda_available(), 'CuPy and a CUDA device are required')
+class CudaBetaBackendTests(unittest.TestCase):
+    def test_irregular_padded_blocks_have_correct_quadratic_form(self):
+        blocks, sizes, beta_mrg, psi = _inputs()
+        backend = CudaBetaBackend(
+            blocks, sizes, beta_mrg, 1000,
+            seed=123, cuda_bucket_size=4,
+        )
+        beta, quad = backend.sample(psi, 0.7)
+
+        expected_quad = 0.0
+        start = 0
+        for ld, size in zip(blocks, sizes):
+            if not size:
+                continue
+            block_slice = slice(start, start + size)
+            precision = ld + np.diag(1.0 / psi[block_slice, 0])
+            expected_quad += (
+                beta[block_slice].T @ precision @ beta[block_slice]
+            ).item()
+            start += size
+
+        self.assertTrue(np.isfinite(beta).all())
+        self.assertAlmostEqual(quad, expected_quad, places=9)
+
+    def test_seeded_backend_is_reproducible(self):
+        blocks, sizes, beta_mrg, psi = _inputs()
+        backends = [
+            CudaBetaBackend(
+                blocks, sizes, beta_mrg, 1000,
+                seed=987, cuda_bucket_size=4,
+            )
+            for _ in range(2)
+        ]
+        first_beta, first_quad = backends[0].sample(psi, 0.7)
+        second_beta, second_quad = backends[1].sample(psi, 0.7)
+
+        np.testing.assert_array_equal(first_beta, second_beta)
+        self.assertEqual(first_quad, second_quad)
 
 
 if __name__ == '__main__':
