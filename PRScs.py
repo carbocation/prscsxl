@@ -14,6 +14,7 @@ python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX -
                  --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH
                  --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED
                  --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE
+                 --psi_backend=cpu|cuda --cuda_gig_max_rounds=ROUNDS
                  --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 
 """
@@ -31,7 +32,7 @@ import mcmc_gtb
 def parse_param():
     long_opts_list = ['ref_dir=', 'bim_prefix=', 'sst_file=', 'a=', 'b=', 'phi=', 'n_gwas=',
                       'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'joint_chromosomes=', 'ld_cache_dir=', 'beta_std=', 'write_psi=', 'write_pst=', 'seed=',
-                      'backend=', 'cuda_device=', 'cuda_bucket_size=', 'ld_diagnostics=', 'ld_rank_tol=', 'profile=', 'help']
+                      'backend=', 'cuda_device=', 'cuda_bucket_size=', 'psi_backend=', 'cuda_gig_max_rounds=', 'ld_diagnostics=', 'ld_rank_tol=', 'profile=', 'help']
 
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None,
                   'n_iter': 1000, 'n_burnin': 500, 'thin': 5, 'out_dir': None, 'chrom': range(1,23),
@@ -39,7 +40,8 @@ def parse_param():
                   'ld_cache_dir': None,
                   'beta_std': 'FALSE', 'write_psi': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
                   'backend': 'cpu', 'cuda_device': 0,
-                  'cuda_bucket_size': 32, 'ld_diagnostics': 'FALSE',
+                  'cuda_bucket_size': 32, 'psi_backend': 'cpu',
+                  'cuda_gig_max_rounds': 1000, 'ld_diagnostics': 'FALSE',
                   'ld_rank_tol': 1e-8, 'profile': 'FALSE'}
 
     print('\n')
@@ -77,6 +79,8 @@ def parse_param():
             elif opt == "--backend": param_dict['backend'] = arg.lower()
             elif opt == "--cuda_device": param_dict['cuda_device'] = int(arg)
             elif opt == "--cuda_bucket_size": param_dict['cuda_bucket_size'] = int(arg)
+            elif opt == "--psi_backend": param_dict['psi_backend'] = arg.lower()
+            elif opt == "--cuda_gig_max_rounds": param_dict['cuda_gig_max_rounds'] = int(arg)
             elif opt == "--ld_diagnostics": param_dict['ld_diagnostics'] = arg.upper()
             elif opt == "--ld_rank_tol": param_dict['ld_rank_tol'] = float(arg)
             elif opt == "--profile": param_dict['profile'] = arg.upper()
@@ -110,6 +114,12 @@ def parse_param():
         sys.exit(2)
     elif param_dict['cuda_bucket_size'] < 1:
         print('* --cuda_bucket_size must be at least 1\n')
+        sys.exit(2)
+    elif param_dict['psi_backend'] not in ('cpu', 'cuda'):
+        print('* --psi_backend must be cpu or cuda\n')
+        sys.exit(2)
+    elif param_dict['cuda_gig_max_rounds'] < 1:
+        print('* --cuda_gig_max_rounds must be at least 1\n')
         sys.exit(2)
     elif param_dict['ld_diagnostics'] not in ('TRUE', 'FALSE'):
         print('* --ld_diagnostics must be True or False\n')
@@ -264,6 +274,8 @@ def _run_mcmc(param_dict, chromosome_input, chrom,
         cuda_device=param_dict['cuda_device'],
         cuda_bucket_size=param_dict['cuda_bucket_size'],
         profile=param_dict['profile'],
+        psi_backend=param_dict['psi_backend'],
+        cuda_gig_max_rounds=param_dict['cuda_gig_max_rounds'],
     )
 
 

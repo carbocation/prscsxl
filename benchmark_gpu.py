@@ -27,6 +27,10 @@ def parse_args():
     parser.add_argument('--thin', type=int, default=2)
     parser.add_argument('--cuda-device', type=int, default=0)
     parser.add_argument('--cuda-bucket-size', type=int, default=32)
+    parser.add_argument(
+        '--psi-backend', choices=('cpu', 'cuda'), default='cpu'
+    )
+    parser.add_argument('--cuda-gig-max-rounds', type=int, default=1000)
     return parser.parse_args()
 
 
@@ -114,6 +118,8 @@ def main():
                 cuda_device=args.cuda_device,
                 cuda_bucket_size=args.cuda_bucket_size,
                 profile='TRUE',
+                psi_backend=args.psi_backend,
+                cuda_gig_max_rounds=args.cuda_gig_max_rounds,
             )
             timings[backend] = time.perf_counter() - started
             print(

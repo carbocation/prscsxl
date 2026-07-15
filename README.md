@@ -114,7 +114,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --psi_backend=cpu|cuda --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -195,6 +195,15 @@ solves through CuPy.
 - CUDA_BUCKET_SIZE (optional): LD block sizes are rounded up to this interval
 for CUDA batching. Smaller values reduce padding while larger values may form
 denser batches. Default is 32.
+
+- PSI_BACKEND (optional): `cpu` uses the fused Numba GIG sampler and is the
+default. `cuda` uses a vectorized Devroye rejection sampler driven by CuPy's
+device random-number generator. Seeded runs are reproducible within a fixed
+backend, but CPU and CUDA random streams differ.
+
+- CUDA_GIG_MAX_ROUNDS (optional): Maximum vector rejection rounds for the
+CUDA GIG sampler. The sampler fails explicitly instead of returning incomplete
+draws if this bound is reached. Default is 1000.
 
 - LD_DIAGNOSTICS (optional): If True, report LD block sizes, CUDA padding,
 numerical rank, and retained condition estimates before sampling. Default is
@@ -283,6 +292,9 @@ For a quick synthetic CPU/CUDA comparison:
 ```
 python3 benchmark_gpu.py --backends=cpu,cuda --n-iter=100
 ```
+
+Add `--psi-backend=cuda` to include the vectorized CUDA local-shrinkage
+sampler in both benchmark runs.
 
 
 ## Test Data
