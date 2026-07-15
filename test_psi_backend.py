@@ -11,6 +11,7 @@ from scipy.special import kv
 import gigrnd
 from psi_backend import (
     CpuPsiBackend,
+    CudaFusedPsiBackend,
     CudaPsiBackend,
     CudaRawPsiBackend,
     make_psi_backend,
@@ -142,10 +143,10 @@ class CudaPsiBackendTests(unittest.TestCase):
 
 @unittest.skipUnless(_cuda_available(), 'CuPy and a CUDA device are required')
 class CudaRawPsiBackendTests(unittest.TestCase):
-    def test_factory_selects_single_kernel_backend(self):
+    def test_factory_selects_fused_single_kernel_backend(self):
         self.assertIsInstance(
             make_psi_backend('cuda', 10, seed=123),
-            CudaRawPsiBackend,
+            CudaFusedPsiBackend,
         )
 
     def test_seeded_backend_is_reproducible_across_calls(self):
@@ -209,6 +210,94 @@ class CudaRawPsiBackendTests(unittest.TestCase):
                 self.assertIn(
                     'rejection rounds', backend.profile_summary()
                 )
+
+
+@unittest.skipUnless(_cuda_available(), 'CuPy and a CUDA device are required')
+class CudaFusedPsiBackendTests(unittest.TestCase):
+    def test_seeded_joint_update_is_reproducible(self):
+        size = 1000
+        old_psi = np.linspace(0.2, 1.0, size)
+        beta = np.linspace(0.0001, 0.01, size)
+        first = np.empty(size)
+        second = np.empty(size)
+
+        first_sum = CudaFusedPsiBackend(size, seed=123).sample_joint(
+            first, 0.5, 1.5, old_psi, 0.1, beta, 1.0, 200_000,
+            need_delta_sum=True,
+        )
+        second_sum = CudaFusedPsiBackend(size, seed=123).sample_joint(
+            second, 0.5, 1.5, old_psi, 0.1, beta, 1.0, 200_000,
+            need_delta_sum=True,
+        )
+
+        np.testing.assert_array_equal(first, second)
+        self.assertEqual(first_sum, second_sum)
+
+    def test_joint_update_matches_cpu_transition_moments(self):
+        size = 100_000
+        old_psi = np.full(size, 0.8)
+        phi = 0.2
+        gamma_shape = 1.5
+        gig_shape = 0.5
+        n = 1000
+        sigma = 1.0
+        beta = np.full(size, np.sqrt(2.0 * sigma / n))
+        actual = np.empty(size)
+
+        backend = CudaFusedPsiBackend(size, seed=456)
+        delta_sum = backend.sample_joint(
+            actual, gig_shape, gamma_shape, old_psi, phi, beta,
+            sigma, n, need_delta_sum=True,
+        )
+
+        delta_scale = 1.0 / (old_psi[0] + phi)
+        expected_delta_sum = size * gamma_shape * delta_scale
+        delta_sum_sd = np.sqrt(size * gamma_shape) * delta_scale
+        self.assertLess(
+            abs(delta_sum - expected_delta_sum), 5.0 * delta_sum_sd
+        )
+        delta_draws = backend._cp.asnumpy(backend._delta)
+        expected_delta_variance = gamma_shape * delta_scale**2
+        self.assertTrue((delta_draws > 0.0).all())
+        self.assertLess(
+            abs(float(delta_draws.var()) - expected_delta_variance) /
+            expected_delta_variance,
+            0.03,
+        )
+
+        np.random.seed(789)
+        gigrnd.seed_rng(789)
+        reference_delta = np.random.gamma(
+            gamma_shape, delta_scale, size
+        )
+        reference = np.empty(size)
+        gigrnd.gig_rvs_vec(
+            reference, gig_shape, reference_delta, beta, sigma, n
+        )
+
+        # Mixing over delta gives the untruncated positive-shape draw an
+        # infinite second moment here. PRS-CS immediately caps psi at 1, so
+        # compare the bounded transition the chain actually consumes.
+        actual_clipped = np.minimum(actual, 1.0)
+        reference_clipped = np.minimum(reference, 1.0)
+        combined_mean_se = np.sqrt(
+            (actual_clipped.var() + reference_clipped.var()) / size
+        )
+        self.assertLess(
+            abs(float(actual_clipped.mean() - reference_clipped.mean())),
+            6.0 * combined_mean_se,
+        )
+        self.assertLess(
+            abs(float(actual_clipped.var() - reference_clipped.var())) /
+            float(reference_clipped.var()),
+            0.05,
+        )
+        self.assertLess(
+            abs(float((actual >= 1.0).mean()) -
+                float((reference >= 1.0).mean())),
+            0.01,
+        )
+        self.assertIn('delta + GIG', backend.profile_summary())
 
 
 if __name__ == '__main__':

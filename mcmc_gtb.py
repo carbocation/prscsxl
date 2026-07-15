@@ -140,24 +140,38 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
         # force sigma to be a Python float (not a 0-d array)
         sigma = float(1.0/np.random.gamma((n+p)/2.0, 1.0/err))
 
-        delta = np.random.gamma(a+b, 1.0/(psi+phi))
-
-        psi_start = time.perf_counter()
-        psi_sampler.sample(
-            psi[:, 0],
-            float(a - 0.5),
-            delta[:, 0],
-            beta[:, 0],
-            float(sigma),
-            int(n),
-        )
+        if hasattr(psi_sampler, 'sample_joint'):
+            psi_start = time.perf_counter()
+            delta_sum = psi_sampler.sample_joint(
+                psi[:, 0],
+                float(a - 0.5),
+                float(a + b),
+                psi[:, 0],
+                float(phi),
+                beta[:, 0],
+                float(sigma),
+                int(n),
+                need_delta_sum=phi_updt,
+            )
+        else:
+            delta = np.random.gamma(a+b, 1.0/(psi+phi))
+            psi_start = time.perf_counter()
+            psi_sampler.sample(
+                psi[:, 0],
+                float(a - 0.5),
+                delta[:, 0],
+                beta[:, 0],
+                float(sigma),
+                int(n),
+            )
+            delta_sum = float(delta.sum()) if phi_updt else None
         psi_elapsed = time.perf_counter() - psi_start
         
         psi[psi>1] = 1.0
 
         if phi_updt == True:
             w = np.random.gamma(1.0, 1.0/(phi+1.0))
-            phi = np.random.gamma(p*b+0.5, 1.0/(sum(delta)+w))
+            phi = np.random.gamma(p*b+0.5, 1.0/(delta_sum+w))
 
         # posterior
         if (itr>n_burnin) and (itr % thin == 0):
