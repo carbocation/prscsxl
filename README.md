@@ -298,10 +298,12 @@ device pointer arrays once, then invokes FP64 `potrfBatched` and
 `trsmBatched` directly. This avoids generic-wrapper copies without changing
 the conditional Gaussian calculation.
 
-Real LD panels can have only one or two blocks in most padded-size buckets.
-For buckets containing fewer than eight matrices, the CUDA backend uses
-ordinary `potrf` and `trsm` calls; denser buckets retain the batched routines.
-This occupancy-aware dispatch preserves the exact FP64 transition.
+The CUDA backend sorts LD blocks by size and forms the maximum number of groups
+containing at least eight matrices. Dynamic programming selects group
+boundaries that minimize estimated padded cubic work; `--cuda_bucket_size`
+remains the dimension-alignment increment. If fewer than eight blocks are
+available, fixed-width grouping is used instead. This adaptive batching
+preserves the exact FP64 transition.
 
 Every matrix in a sparse bucket, or an intact dense batched bucket, is assigned
 to a non-blocking factorization stream with its own cuSOLVER handle and
