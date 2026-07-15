@@ -19,6 +19,7 @@ python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX -
 import os
 import sys
 import getopt
+import time
 
 import parse_genet
 import mcmc_gtb
@@ -121,6 +122,42 @@ def _load_chromosome(param_dict, chrom):
     }
 
 
+def _load_joint_chromosomes(param_dict, chromosomes):
+    """Load selected chromosomes without repeatedly scanning text inputs."""
+    total_started = time.perf_counter()
+    text_started = time.perf_counter()
+    ref_dicts = parse_genet.parse_ref_chromosomes(
+        _reference_file(param_dict), chromosomes
+    )
+    vld_dict = parse_genet.parse_bim_chromosomes(
+        param_dict['bim_prefix'], chromosomes
+    )
+    sst_dicts = parse_genet.parse_sumstats_chromosomes(
+        ref_dicts, vld_dict, param_dict['sst_file'], param_dict['n_gwas']
+    )
+    print('[LOAD joint] text inputs %.3fs' %
+          (time.perf_counter() - text_started))
+
+    chromosome_inputs = []
+    for chromosome in chromosomes:
+        print('##### load chromosome %d LD #####' % chromosome)
+        sst_dict = sst_dicts[chromosome]
+        ld_blk, blk_size = parse_genet.parse_ldblk(
+            param_dict['ref_dir'], sst_dict, chromosome,
+            report_timing=True,
+        )
+        chromosome_inputs.append({
+            'chrom': chromosome,
+            'sst_dict': sst_dict,
+            'ld_blk': ld_blk,
+            'blk_size': blk_size,
+        })
+
+    print('[LOAD joint] all inputs %.3fs' %
+          (time.perf_counter() - total_started))
+    return chromosome_inputs
+
+
 def _combine_chromosomes(chromosome_inputs):
     if not chromosome_inputs:
         raise ValueError('at least one chromosome must be selected')
@@ -200,9 +237,9 @@ def main():
             '##### jointly process chromosomes %s #####' %
             ','.join(str(chrom) for chrom in chromosomes)
         )
-        joint_input = _combine_chromosomes([
-            _load_chromosome(param_dict, chrom) for chrom in chromosomes
-        ])
+        joint_input = _combine_chromosomes(
+            _load_joint_chromosomes(param_dict, chromosomes)
+        )
         _run_mcmc(
             param_dict, joint_input, chromosomes,
             chromosome_slices=joint_input['chromosome_slices'],

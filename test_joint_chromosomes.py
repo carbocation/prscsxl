@@ -15,6 +15,7 @@ import numpy as np
 
 import PRScs
 import mcmc_gtb
+import parse_genet
 
 
 def _summary(chromosome, snps):
@@ -62,6 +63,60 @@ class JointChromosomeCliTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(SystemExit, '2'):
                     PRScs.parse_param()
+
+
+class JointTextParserTests(unittest.TestCase):
+    def test_joint_parser_matches_chromosome_wise_allele_alignment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reference = os.path.join(directory, 'snpinfo_ukbb_hm3')
+            bim_prefix = os.path.join(directory, 'target')
+            sumstats = os.path.join(directory, 'sumstats.txt')
+
+            with open(reference, 'w') as ff:
+                ff.write('CHR SNP BP A1 A2 MAF\n')
+                ff.write('1 rs1 1 A C 0.10\n')
+                ff.write('1 rs2 2 G A 0.20\n')
+                ff.write('2 rs3 3 A G 0.30\n')
+                ff.write('2 rs4 4 C T 0.40\n')
+
+            with open(bim_prefix + '.bim', 'w') as ff:
+                ff.write('1 rs1 0 1 A C\n')
+                ff.write('1 rs2 0 2 A G\n')
+                ff.write('2 rs3 0 3 T C\n')
+                ff.write('2 rs4 0 4 A G\n')
+
+            with open(sumstats, 'w') as ff:
+                ff.write('SNP A1 A2 BETA SE\n')
+                ff.write('rs1 A C 0.10 0.01\n')
+                ff.write('rs2 G A 0.20 0.02\n')
+                ff.write('rs3 A G 0.30 0.03\n')
+                ff.write('rs4 C T 0.40 0.04\n')
+                ff.write('rsjunk A C not-a-number invalid\n')
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                expected = {}
+                for chromosome in (1, 2):
+                    ref_dict = parse_genet.parse_ref(
+                        reference, chromosome
+                    )
+                    vld_dict = parse_genet.parse_bim(
+                        bim_prefix, chromosome
+                    )
+                    expected[chromosome] = parse_genet.parse_sumstats(
+                        ref_dict, vld_dict, sumstats, 100
+                    )
+
+                ref_dicts = parse_genet.parse_ref_chromosomes(
+                    reference, (1, 2)
+                )
+                vld_dict = parse_genet.parse_bim_chromosomes(
+                    bim_prefix, (1, 2)
+                )
+                actual = parse_genet.parse_sumstats_chromosomes(
+                    ref_dicts, vld_dict, sumstats, 100
+                )
+
+            self.assertEqual(actual, expected)
 
 
 class JointChromosomeInputTests(unittest.TestCase):
@@ -141,7 +196,8 @@ class JointChromosomeMainTests(unittest.TestCase):
         }
         with mock.patch.object(PRScs, 'parse_param', return_value=parameters):
             with mock.patch.object(
-                    PRScs, '_load_chromosome', side_effect=self.inputs):
+                    PRScs, '_load_joint_chromosomes',
+                    return_value=self.inputs):
                 with mock.patch.object(PRScs, '_run_mcmc') as run_mcmc:
                     with contextlib.redirect_stdout(io.StringIO()):
                         PRScs.main()

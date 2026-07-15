@@ -207,6 +207,12 @@ remains False for compatibility with established PRS-CS results. In
 particular, an automatic-`phi` joint run is not expected to reproduce
 independently fitted chromosome chains.
 
+Joint mode scans the reference and BIM text files once and the summary-
+statistics file twice for all selected chromosomes, rather than repeating
+those whole-file scans for each chromosome. It also reports text-input and
+per-chromosome LD loading timings. The default chromosome-wise mode retains
+the original text-parsing path.
+
 
 ## Computational Efficiency
 
