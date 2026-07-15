@@ -7,8 +7,8 @@ Markov Chain Monte Carlo (MCMC) sampler for polygenic prediction with continuous
 
 
 import numpy as np
-from scipy import linalg 
 import gigrnd
+from beta_backend import make_beta_backend
 
 
 def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom, out_dir, beta_std, write_psi, write_pst, seed):
@@ -23,7 +23,6 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
     maf = np.array(sst_dict['MAF'], ndmin=2).T
     n_pst = int((n_iter-n_burnin)/thin)
     p = len(sst_dict['SNP'])
-    n_blk = len(ld_blk)
 
     # initialization
     beta = np.zeros((p,1))
@@ -43,25 +42,18 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
     sigma_est = 0.0
     phi_est = 0.0
 
+    beta_sampler = make_beta_backend(
+        'cpu', ld_blk, blk_size, beta_mrg, n
+    )
+    print('... beta backend: %s ...' % beta_sampler.describe())
+
     # MCMC
     pp = 0
     for itr in range(1,n_iter+1):
         if itr % 100 == 0:
             print('--- iter-' + str(itr) + ' ---')
 
-        mm = 0; quad = 0.0
-        for kk in range(n_blk):
-            if blk_size[kk] == 0:
-                continue
-            else:
-                idx_blk = range(mm,mm+blk_size[kk])
-                dinvt = ld_blk[kk]+np.diag(1.0/psi[idx_blk].T[0])
-                dinvt_chol = linalg.cholesky(dinvt)
-                sd = float(np.sqrt(sigma / n))
-                beta_tmp = linalg.solve_triangular(dinvt_chol, beta_mrg[idx_blk], trans='T') + sd*np.random.randn(len(idx_blk),1)
-                beta[idx_blk] = linalg.solve_triangular(dinvt_chol, beta_tmp, trans='N')
-                quad += float(np.dot(np.dot(beta[idx_blk].T, dinvt), beta[idx_blk]))
-                mm += blk_size[kk]
+        beta, quad = beta_sampler.sample(psi, sigma)
 
         s1 = float((beta * beta_mrg).sum())
         s2 = float((beta**2 / psi).sum())
@@ -140,5 +132,4 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin, thin, chrom
         print('... Estimated global shrinkage parameter: %1.2e ...' % phi_est )
 
     print('... Done ...')
-
 
