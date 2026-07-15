@@ -248,8 +248,9 @@ class _FixedPsiBackend:
     def describe(self):
         return 'fixed test psi backend'
 
-    def sample(self, output, *args):
+    def sample_joint(self, output, *args, **kwargs):
         output.fill(0.5)
+        return 6.0
 
 
 class JointChromosomeSamplerTests(unittest.TestCase):
@@ -270,12 +271,6 @@ class JointChromosomeSamplerTests(unittest.TestCase):
             return_value=_FixedBetaBackend(len(summary['SNP']))
         )
         psi_factory = mock.Mock(return_value=_FixedPsiBackend())
-        gamma_draws = [
-            1.0,
-            np.ones((5, 1)),
-            1.0,
-            1.0,
-        ]
 
         with tempfile.TemporaryDirectory() as directory:
             output = os.path.join(directory, 'joint')
@@ -285,7 +280,7 @@ class JointChromosomeSamplerTests(unittest.TestCase):
                         mcmc_gtb, 'make_psi_backend', psi_factory):
                     with mock.patch.object(
                             mcmc_gtb.np.random, 'gamma',
-                            side_effect=gamma_draws) as gamma:
+                            return_value=1.0) as gamma:
                         with contextlib.redirect_stdout(io.StringIO()):
                             mcmc_gtb.mcmc(
                                 1.0, 0.5, None, summary, 100,
@@ -295,11 +290,11 @@ class JointChromosomeSamplerTests(unittest.TestCase):
                                 chromosome_slices=[(1, 0, 2), (2, 2, 5)],
                             )
 
-            self.assertEqual(gamma.call_count, 4)
-            self.assertAlmostEqual(gamma.call_args_list[3].args[0], 3.0)
-            self.assertAlmostEqual(
-                np.asarray(gamma.call_args_list[3].args[1]).item(), 1.0 / 6.0
-            )
+            # Sigma, the auxiliary global-scale draw, and phi are sampled
+            # once. The fused psi backend supplies the all-SNP delta sum.
+            self.assertEqual(gamma.call_count, 3)
+            self.assertAlmostEqual(gamma.call_args_list[2].args[0], 3.0)
+            self.assertAlmostEqual(gamma.call_args_list[2].args[1], 1.0 / 7.0)
             psi_factory.assert_called_once()
             self.assertEqual(psi_factory.call_args.args[1], 5)
 
