@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+
+"""Tests for opt-in joint chromosome sampling."""
+
+
+import contextlib
+import io
+import os
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+import numpy as np
+
+import PRScs
+import mcmc_gtb
+
+
+def _summary(chromosome, snps):
+    size = len(snps)
+    return {
+        'CHR': [chromosome] * size,
+        'SNP': list(snps),
+        'BP': list(range(1, size + 1)),
+        'A1': ['A'] * size,
+        'A2': ['C'] * size,
+        'MAF': [0.25] * size,
+        'BETA': [0.0] * size,
+        'FLP': [1] * size,
+    }
+
+
+class JointChromosomeCliTests(unittest.TestCase):
+    def test_joint_chromosomes_flag_uses_existing_boolean_style(self):
+        argv = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+            '--joint_chromosomes=true',
+        ]
+        with mock.patch.object(sys, 'argv', argv):
+            with contextlib.redirect_stdout(io.StringIO()):
+                parameters = PRScs.parse_param()
+
+        self.assertEqual(parameters['joint_chromosomes'], 'TRUE')
+
+    def test_invalid_joint_chromosomes_value_is_rejected(self):
+        argv = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+            '--joint_chromosomes=sometimes',
+        ]
+        with mock.patch.object(sys, 'argv', argv):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, '2'):
+                    PRScs.parse_param()
+
+
+class JointChromosomeInputTests(unittest.TestCase):
+    def test_chromosome_inputs_are_concatenated_with_output_slices(self):
+        inputs = [
+            {
+                'chrom': 1,
+                'sst_dict': _summary(1, ['rs1', 'rs2']),
+                'ld_blk': [np.eye(2)],
+                'blk_size': [2],
+            },
+            {
+                'chrom': 2,
+                'sst_dict': _summary(2, ['rs3', 'rs4', 'rs5']),
+                'ld_blk': [np.eye(3)],
+                'blk_size': [3],
+            },
+        ]
+
+        combined = PRScs._combine_chromosomes(inputs)
+
+        self.assertEqual(
+            combined['sst_dict']['SNP'],
+            ['rs1', 'rs2', 'rs3', 'rs4', 'rs5'],
+        )
+        self.assertEqual(combined['blk_size'], [2, 3])
+        self.assertEqual(
+            combined['chromosome_slices'], [(1, 0, 2), (2, 2, 5)]
+        )
+
+    def test_empty_selected_chromosome_is_rejected(self):
+        inputs = [
+            {
+                'chrom': 1,
+                'sst_dict': _summary(1, []),
+                'ld_blk': [],
+                'blk_size': [],
+            },
+            {
+                'chrom': 2,
+                'sst_dict': _summary(2, ['rs2']),
+                'ld_blk': [np.eye(1)],
+                'blk_size': [1],
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, 'selected chromosome 1'):
+            PRScs._combine_chromosomes(inputs)
+
+    def test_duplicate_selected_chromosome_is_rejected(self):
+        item = {
+            'chrom': 1,
+            'sst_dict': _summary(1, ['rs1']),
+            'ld_blk': [np.eye(1)],
+            'blk_size': [1],
+        }
+        with self.assertRaisesRegex(ValueError, 'chromosome 1 twice'):
+            PRScs._combine_chromosomes([item, item])
+
+
+class JointChromosomeMainTests(unittest.TestCase):
+    def setUp(self):
+        self.inputs = [
+            {
+                'chrom': chromosome,
+                'sst_dict': _summary(chromosome, ['rs%d' % chromosome]),
+                'ld_blk': [np.eye(1)],
+                'blk_size': [1],
+            }
+            for chromosome in (1, 2)
+        ]
+
+    def test_joint_mode_invokes_one_sampler_for_selected_chromosomes(self):
+        parameters = {
+            'chrom': [1, 2],
+            'joint_chromosomes': 'TRUE',
+        }
+        with mock.patch.object(PRScs, 'parse_param', return_value=parameters):
+            with mock.patch.object(
+                    PRScs, '_load_chromosome', side_effect=self.inputs):
+                with mock.patch.object(PRScs, '_run_mcmc') as run_mcmc:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        PRScs.main()
+
+        run_mcmc.assert_called_once()
+        self.assertEqual(run_mcmc.call_args.args[2], [1, 2])
+        self.assertEqual(
+            run_mcmc.call_args.kwargs['chromosome_slices'],
+            [(1, 0, 1), (2, 1, 2)],
+        )
+
+    def test_default_mode_preserves_one_sampler_per_chromosome(self):
+        parameters = {
+            'chrom': [1, 2],
+            'joint_chromosomes': 'FALSE',
+        }
+        with mock.patch.object(PRScs, 'parse_param', return_value=parameters):
+            with mock.patch.object(
+                    PRScs, '_load_chromosome', side_effect=self.inputs):
+                with mock.patch.object(PRScs, '_run_mcmc') as run_mcmc:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        PRScs.main()
+
+        self.assertEqual(run_mcmc.call_count, 2)
+        self.assertEqual(
+            [call.args[2] for call in run_mcmc.call_args_list], [1, 2]
+        )
+        self.assertTrue(
+            all('chromosome_slices' not in call.kwargs
+                for call in run_mcmc.call_args_list)
+        )
+
+
+class _FixedBetaBackend:
+    def __init__(self, size):
+        self._size = size
+
+    def describe(self):
+        return 'fixed test beta backend'
+
+    def sample(self, psi, sigma):
+        return np.zeros((self._size, 1)), 0.0
+
+
+class _FixedPsiBackend:
+    def describe(self):
+        return 'fixed test psi backend'
+
+    def sample(self, output, *args):
+        output.fill(0.5)
+
+
+class JointChromosomeSamplerTests(unittest.TestCase):
+    def test_one_chain_updates_global_parameters_and_splits_outputs(self):
+        summary = _summary(1, ['rs1', 'rs2'])
+        second = _summary(2, ['rs3', 'rs4', 'rs5'])
+        for key in summary:
+            summary[key].extend(second[key])
+
+        beta_factory = mock.Mock(
+            return_value=_FixedBetaBackend(len(summary['SNP']))
+        )
+        psi_factory = mock.Mock(return_value=_FixedPsiBackend())
+        gamma_draws = [
+            1.0,
+            np.ones((5, 1)),
+            1.0,
+            1.0,
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, 'joint')
+            with mock.patch.object(
+                    mcmc_gtb, 'make_beta_backend', beta_factory):
+                with mock.patch.object(
+                        mcmc_gtb, 'make_psi_backend', psi_factory):
+                    with mock.patch.object(
+                            mcmc_gtb.np.random, 'gamma',
+                            side_effect=gamma_draws) as gamma:
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            mcmc_gtb.mcmc(
+                                1.0, 0.5, None, summary, 100,
+                                [np.eye(2), np.eye(3)], [2, 3],
+                                1, 0, 1, [1, 2], output, 'TRUE',
+                                'TRUE', 'FALSE', 123,
+                                chromosome_slices=[(1, 0, 2), (2, 2, 5)],
+                            )
+
+            self.assertEqual(gamma.call_count, 4)
+            self.assertAlmostEqual(gamma.call_args_list[3].args[0], 3.0)
+            self.assertAlmostEqual(
+                np.asarray(gamma.call_args_list[3].args[1]).item(), 1.0 / 6.0
+            )
+            psi_factory.assert_called_once()
+            self.assertEqual(psi_factory.call_args.args[1], 5)
+
+            chromosome_one = output + '_pst_eff_a1_b0.5_phiauto_chr1.txt'
+            chromosome_two = output + '_pst_eff_a1_b0.5_phiauto_chr2.txt'
+            with open(chromosome_one) as ff:
+                chromosome_one_lines = ff.readlines()
+            with open(chromosome_two) as ff:
+                chromosome_two_lines = ff.readlines()
+
+            self.assertEqual(len(chromosome_one_lines), 2)
+            self.assertEqual(len(chromosome_two_lines), 3)
+            self.assertTrue(
+                all(line.startswith('1\t') for line in chromosome_one_lines)
+            )
+            self.assertTrue(
+                all(line.startswith('2\t') for line in chromosome_two_lines)
+            )
+
+            psi_one = output + '_pst_psi_a1_b0.5_phiauto_chr1.txt'
+            psi_two = output + '_pst_psi_a1_b0.5_phiauto_chr2.txt'
+            with open(psi_one) as ff:
+                self.assertEqual(len(ff.readlines()), 2)
+            with open(psi_two) as ff:
+                self.assertEqual(len(ff.readlines()), 3)
+
+    def test_joint_output_slices_must_cover_every_snp(self):
+        with self.assertRaisesRegex(ValueError, 'contiguous'):
+            mcmc_gtb._chromosome_partitions(
+                [1, 2], [(1, 0, 2), (2, 3, 5)], 5
+            )
+
+
+if __name__ == '__main__':
+    unittest.main()
