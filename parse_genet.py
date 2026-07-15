@@ -6,12 +6,16 @@ Parse the reference panel, summary statistics, and validation set.
 """
 
 
+import hashlib
 import os
 import time
 import numpy as np
 from scipy.stats import norm
 from scipy import linalg
 import h5py
+
+
+_LD_CACHE_VERSION = 1
 
 
 def _project_ld_psd(ld):
@@ -377,10 +381,99 @@ def _ldblk_filename(ldblk_dir, chrom):
     return os.path.join(ldblk_dir, prefix + str(chrom) + '.hdf5')
 
 
-def parse_ldblk(ldblk_dir, sst_dict, chrom, report_timing=False):
+def _ld_cache_key(chr_name, sst_dict):
+    if len(sst_dict['SNP']) != len(sst_dict['FLP']):
+        raise ValueError('SNP and allele-flip arrays must have equal length')
+
+    source = os.stat(chr_name)
+    digest = hashlib.sha256()
+    digest.update(b'PRScs projected LD cache')
+    digest.update(str(_LD_CACHE_VERSION).encode('ASCII'))
+    digest.update(os.path.realpath(chr_name).encode('UTF-8'))
+    digest.update(str(source.st_size).encode('ASCII'))
+    digest.update(str(source.st_mtime_ns).encode('ASCII'))
+    for snp, flip in zip(sst_dict['SNP'], sst_dict['FLP']):
+        encoded = snp.encode('UTF-8')
+        digest.update(len(encoded).to_bytes(4, byteorder='little'))
+        digest.update(encoded)
+        digest.update(int(flip).to_bytes(2, byteorder='little', signed=True))
+    return digest.hexdigest()
+
+
+def _read_ld_cache(cache_file, cache_key):
+    try:
+        with h5py.File(cache_file, 'r') as cached:
+            if (int(cached.attrs['version']) != _LD_CACHE_VERSION or
+                    cached.attrs['key'] != cache_key):
+                return None
+
+            blk_size = np.asarray(cached['blk_size'], dtype=np.int64).tolist()
+            blocks = cached['blocks']
+            ld_blk = [
+                np.asfortranarray(np.array(blocks[str(index)]['ld']))
+                for index in range(len(blk_size))
+            ]
+            return ld_blk, blk_size
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        print('... ignore unusable LD cache %s: %s ...' %
+              (cache_file, error))
+        return None
+
+
+def _write_ld_cache(cache_file, cache_key, ld_blk, blk_size):
+    temporary = '%s.tmp-%d' % (cache_file, os.getpid())
+    try:
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        with h5py.File(temporary, 'w') as cached:
+            cached.attrs['version'] = _LD_CACHE_VERSION
+            cached.attrs['key'] = cache_key
+            cached.create_dataset(
+                'blk_size', data=np.asarray(blk_size, dtype=np.int64)
+            )
+            blocks = cached.create_group('blocks')
+            for index, ld in enumerate(ld_blk):
+                block = blocks.create_group(str(index))
+                block.create_dataset('ld', data=ld)
+        os.replace(temporary, cache_file)
+        return True
+    except (OSError, RuntimeError, ValueError) as error:
+        print('... unable to write LD cache %s: %s ...' %
+              (cache_file, error))
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        return False
+
+
+def parse_ldblk(ldblk_dir, sst_dict, chrom, report_timing=False,
+                cache_dir=None):
     print('... parse reference LD on chromosome %d ...' % chrom)
     total_started = time.perf_counter()
     chr_name = _ldblk_filename(ldblk_dir, chrom)
+
+    cache_file = None
+    cache_key = None
+    if cache_dir is not None:
+        cache_key = _ld_cache_key(chr_name, sst_dict)
+        cache_file = os.path.join(
+            os.path.expanduser(cache_dir),
+            'chr%d-%s.hdf5' % (chrom, cache_key),
+        )
+        cache_started = time.perf_counter()
+        cached = None
+        if os.path.isfile(cache_file):
+            cached = _read_ld_cache(cache_file, cache_key)
+        if cached is not None:
+            cache_elapsed = time.perf_counter() - cache_started
+            print('... loaded projected LD cache: %s ...' % cache_file)
+            if report_timing:
+                print(
+                    '[LOAD chr%d] LD cache HDF5 %.3fs, total %.3fs' %
+                    (chrom, cache_elapsed,
+                     time.perf_counter() - total_started)
+                )
+            return cached
 
     with h5py.File(chr_name, 'r') as hdf_chr:
         n_blk = len(hdf_chr)
@@ -418,16 +511,28 @@ def parse_ldblk(ldblk_dir, sst_dict, chrom, report_timing=False):
         else:
             ld_blk[blk] = np.array([])
 
-    total_elapsed = time.perf_counter() - total_started
+    compute_elapsed = time.perf_counter() - total_started
     if report_timing:
         filtering_elapsed = max(
-            total_elapsed - read_elapsed - projection_elapsed, 0.0
+            compute_elapsed - read_elapsed - projection_elapsed, 0.0
         )
         print(
             '[LOAD chr%d] LD HDF5 %.3fs, filtering %.3fs, '
             'PSD projection %.3fs, total %.3fs' %
             (chrom, read_elapsed, filtering_elapsed,
-             projection_elapsed, total_elapsed)
+             projection_elapsed, compute_elapsed)
         )
+
+    if cache_file is not None:
+        cache_started = time.perf_counter()
+        wrote_cache = _write_ld_cache(
+            cache_file, cache_key, ld_blk, blk_size
+        )
+        if wrote_cache:
+            print('... wrote projected LD cache: %s ...' % cache_file)
+            if report_timing:
+                print('[LOAD chr%d] LD cache write %.3fs' % (
+                    chrom, time.perf_counter() - cache_started
+                ))
 
     return ld_blk, blk_size
