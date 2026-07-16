@@ -164,7 +164,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
          chromosome_slices=None, backend='cpu', cuda_device=0,
          cuda_bucket_size=32, cuda_streams=4, profile='FALSE',
          cuda_gig_max_rounds=1000, chromosome_block_slices=None,
-         chromosome_model='independent'):
+         chromosome_model='independent', psi_max=1.0):
     print('... MCMC ...')
 
     # seed
@@ -190,6 +190,12 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
             'chromosome_model must be independent, joint-global-sigma, '
             'or joint-chromosome-sigma'
         )
+    if psi_max is not None:
+        psi_max = float(psi_max)
+        if not np.isfinite(psi_max) or psi_max <= 0.0:
+            raise ValueError(
+                'psi_max must be a positive finite number or None'
+            )
     joint_chromosomes = chromosome_model != 'independent'
     if joint_chromosomes != (chromosome_slices is not None):
         raise ValueError(
@@ -463,7 +469,8 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
             delta_sum = float(delta.sum()) if phi_updt else None
         psi_elapsed = time.perf_counter() - psi_start
         
-        psi[psi>1] = 1.0
+        if psi_max is not None:
+            np.minimum(psi, psi_max, out=psi)
 
         if phi_updt == True:
             w = np.random.gamma(1.0, 1.0/(phi+1.0))

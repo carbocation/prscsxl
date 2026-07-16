@@ -47,6 +47,7 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['n_burnin'], 500)
         self.assertEqual(parameters['thin'], 5)
         self.assertEqual(parameters['chromosome_model'], 'independent')
+        self.assertEqual(parameters['psi_max'], 1.0)
         self.assertEqual(parameters['beta_std'], 'FALSE')
         self.assertEqual(parameters['write_psi'], 'FALSE')
         self.assertEqual(parameters['write_pst'], 'FALSE')
@@ -85,6 +86,40 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['ld_diagnostics'], 'TRUE')
         self.assertEqual(parameters['ld_rank_tol'], 1e-7)
         self.assertEqual(parameters['profile'], 'TRUE')
+
+    def test_psi_max_accepts_a_positive_cap_or_none(self):
+        base_argv = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+        ]
+        for value, expected in (('2.5', 2.5), ('NONE', None)):
+            with self.subTest(value=value):
+                with mock.patch.object(
+                        sys, 'argv', base_argv + ['--psi_max=' + value]):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        parameters = PRScs.parse_param()
+                self.assertEqual(parameters['psi_max'], expected)
+
+    def test_psi_max_rejects_nonpositive_or_nonfinite_caps(self):
+        base_argv = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+        ]
+        for value in ('0', '-1', 'nan', 'inf'):
+            with self.subTest(value=value):
+                with mock.patch.object(
+                        sys, 'argv', base_argv + ['--psi_max=' + value]):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(SystemExit, '2'):
+                            PRScs.parse_param()
 
     def test_unknown_backend_is_rejected(self):
         argv = [

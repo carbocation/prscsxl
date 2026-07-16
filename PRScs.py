@@ -12,7 +12,8 @@ Usage:
 python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR
                 [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR
                  --chrom=CHROM --chromosome_model=independent|joint-global-sigma|joint-chromosome-sigma --ld_cache_dir=PATH
-                 --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED
+                 --psi_max=POSITIVE_NUMBER|none --write_psi=WRITE_PSI
+                 --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED
                  --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS
                  --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE
                  --ld_rank_tol=TOL --profile=TRUE|FALSE]
@@ -23,6 +24,7 @@ python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX -
 import os
 import sys
 import getopt
+import math
 import time
 
 import parse_genet
@@ -38,14 +40,15 @@ CHROMOSOME_MODELS = (
 
 def parse_param():
     long_opts_list = ['ref_dir=', 'bim_prefix=', 'sst_file=', 'a=', 'b=', 'phi=', 'n_gwas=',
-                      'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'chromosome_model=', 'ld_cache_dir=', 'beta_std=', 'write_psi=', 'write_pst=', 'seed=',
+                      'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'chromosome_model=', 'ld_cache_dir=', 'beta_std=', 'psi_max=', 'write_psi=', 'write_pst=', 'seed=',
                       'backend=', 'cuda_device=', 'cuda_bucket_size=', 'cuda_streams=', 'cuda_gig_max_rounds=', 'ld_diagnostics=', 'ld_rank_tol=', 'profile=', 'help']
 
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None,
                   'n_iter': 1000, 'n_burnin': 500, 'thin': 5, 'out_dir': None, 'chrom': range(1,23),
                   'chromosome_model': 'independent',
                   'ld_cache_dir': None,
-                  'beta_std': 'FALSE', 'write_psi': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
+                  'beta_std': 'FALSE', 'psi_max': 1.0,
+                  'write_psi': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
                   'backend': 'cpu', 'cuda_device': 0,
                   'cuda_bucket_size': 32, 'cuda_streams': 4,
                   'cuda_gig_max_rounds': 1000, 'ld_diagnostics': 'FALSE',
@@ -80,6 +83,10 @@ def parse_param():
             elif opt == "--chromosome_model": param_dict['chromosome_model'] = arg.lower()
             elif opt == "--ld_cache_dir": param_dict['ld_cache_dir'] = arg
             elif opt == "--beta_std": param_dict['beta_std'] = arg.upper()
+            elif opt == "--psi_max":
+                param_dict['psi_max'] = (
+                    None if arg.lower() == 'none' else float(arg)
+                )
             elif opt == "--write_psi": param_dict['write_psi'] = arg.upper()
             elif opt == "--write_pst": param_dict['write_pst'] = arg.upper()
             elif opt == "--seed": param_dict['seed'] = int(arg)
@@ -130,6 +137,11 @@ def parse_param():
             '* --chromosome_model must be independent, '
             'joint-global-sigma, or joint-chromosome-sigma\n'
         )
+        sys.exit(2)
+    elif (param_dict['psi_max'] is not None and
+          (not math.isfinite(param_dict['psi_max']) or
+           param_dict['psi_max'] <= 0.0)):
+        print('* --psi_max must be a positive finite number or none\n')
         sys.exit(2)
     elif param_dict['backend'] not in ('cpu', 'cuda'):
         print('* --backend must be cpu or cuda\n')
@@ -307,6 +319,7 @@ def _run_mcmc(param_dict, chromosome_input, chrom,
         chromosome_model=param_dict.get(
             'chromosome_model', 'independent'
         ),
+        psi_max=param_dict.get('psi_max', 1.0),
         backend=param_dict['backend'],
         cuda_device=param_dict['cuda_device'],
         cuda_bucket_size=param_dict['cuda_bucket_size'],

@@ -251,15 +251,47 @@ class _FixedBetaBackend:
 
 
 class _FixedPsiBackend:
+    def __init__(self, value=0.5):
+        self._value = float(value)
+
     def describe(self):
         return 'fixed test psi backend'
 
     def sample_joint(self, output, *args, **kwargs):
-        output.fill(0.5)
+        output.fill(self._value)
         return 6.0
 
 
 class JointChromosomeSamplerTests(unittest.TestCase):
+    def _posterior_psi_value(self, psi_max):
+        summary = _summary(1, ['rs1'])
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, 'psi-cap')
+            with mock.patch.object(
+                    mcmc_gtb, 'make_beta_backend',
+                    return_value=_FixedBetaBackend(1)):
+                with mock.patch.object(
+                        mcmc_gtb, 'make_psi_backend',
+                        return_value=_FixedPsiBackend(2.5)):
+                    with mock.patch.object(
+                            mcmc_gtb.np.random, 'gamma', return_value=1.0):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            mcmc_gtb.mcmc(
+                                1.0, 0.5, 0.1, summary, 100,
+                                [np.eye(1)], [1], 1, 0, 1, 1, output,
+                                'TRUE', 'TRUE', 'FALSE', 123,
+                                psi_max=psi_max,
+                            )
+
+            psi_file = output + '_pst_psi_a1_b0.5_phi1e-01_chr1.txt'
+            with open(psi_file) as ff:
+                return float(ff.readline().split()[1])
+
+    def test_psi_max_controls_or_disables_the_existing_clip(self):
+        self.assertEqual(self._posterior_psi_value(1.0), 1.0)
+        self.assertEqual(self._posterior_psi_value(1.75), 1.75)
+        self.assertEqual(self._posterior_psi_value(None), 2.5)
+
     def _run_actual_chromosome_sigma_sampler(self, backend):
         summary = _summary(1, ['rs1', 'rs2'])
         second = _summary(2, ['rs3'])

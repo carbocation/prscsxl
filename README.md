@@ -121,6 +121,13 @@ experiments with external-LD summary statistics. Beta and local-shrinkage
 updates on a chromosome use that chromosome's current residual variance, and the
 chromosome delta totals are combined for the global shrinkage update.
 
+`--psi_max` controls the upper bound applied to each sampled local scale.
+The default, `--psi_max=1`, preserves the regularization in the public PRS-CS
+implementation. Set `--psi_max=none` to disable clipping and sample the
+untruncated hierarchy written in the supplement, or provide another positive
+finite value to use a different bound. The setting is identical for CPU and
+CUDA execution.
+
 The original PRS-CS README is preserved below.
 
 ---
@@ -241,7 +248,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --chromosome_model=independent|joint-global-sigma|joint-chromosome-sigma --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --chromosome_model=independent|joint-global-sigma|joint-chromosome-sigma --ld_cache_dir=PATH --psi_max=POSITIVE_NUMBER|none --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -308,6 +315,10 @@ is the default. `joint-global-sigma` runs one chain with genome-wide `phi` and
 residual variance. `joint-chromosome-sigma` runs one chain with genome-wide
 `phi` and one residual variance per chromosome. The two joint models retain
 per-variant local `psi` scales.
+
+- PSI_MAX (optional): Positive finite upper bound applied to each sampled
+local `psi` scale. Default is 1, matching the public implementation. Use
+`none` to disable clipping and sample the untruncated hierarchy.
 
 - LD_CACHE_DIR (optional): Directory for persistent filtered and PSD-projected
 LD caches. Entries are keyed by the source LD file metadata and the exact
