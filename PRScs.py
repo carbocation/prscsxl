@@ -12,6 +12,7 @@ Usage:
 python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR
                 [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR
                  --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH
+                 --project_sumstats=TRUE|FALSE --projection_fraction=FRACTION --projection_min_eigenvalue=VALUE
                  --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED
                  --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS
                  --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE
@@ -23,6 +24,7 @@ python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX -
 import os
 import sys
 import getopt
+import math
 import time
 
 import parse_genet
@@ -32,12 +34,16 @@ import mcmc_gtb
 def parse_param():
     long_opts_list = ['ref_dir=', 'bim_prefix=', 'sst_file=', 'a=', 'b=', 'phi=', 'n_gwas=',
                       'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'joint_chromosomes=', 'ld_cache_dir=', 'beta_std=', 'write_psi=', 'write_pst=', 'seed=',
+                      'project_sumstats=', 'projection_fraction=', 'projection_min_eigenvalue=',
                       'backend=', 'cuda_device=', 'cuda_bucket_size=', 'cuda_streams=', 'cuda_gig_max_rounds=', 'ld_diagnostics=', 'ld_rank_tol=', 'profile=', 'help']
 
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None,
                   'n_iter': 1000, 'n_burnin': 500, 'thin': 5, 'out_dir': None, 'chrom': range(1,23),
                   'joint_chromosomes': 'FALSE',
                   'ld_cache_dir': None,
+                  'project_sumstats': 'FALSE',
+                  'projection_fraction': 0.2,
+                  'projection_min_eigenvalue': 0.01,
                   'beta_std': 'FALSE', 'write_psi': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
                   'backend': 'cpu', 'cuda_device': 0,
                   'cuda_bucket_size': 32, 'cuda_streams': 4,
@@ -72,6 +78,9 @@ def parse_param():
             elif opt == "--chrom": param_dict['chrom'] = arg.split(',')
             elif opt == "--joint_chromosomes": param_dict['joint_chromosomes'] = arg.upper()
             elif opt == "--ld_cache_dir": param_dict['ld_cache_dir'] = arg
+            elif opt == "--project_sumstats": param_dict['project_sumstats'] = arg.upper()
+            elif opt == "--projection_fraction": param_dict['projection_fraction'] = float(arg)
+            elif opt == "--projection_min_eigenvalue": param_dict['projection_min_eigenvalue'] = float(arg)
             elif opt == "--beta_std": param_dict['beta_std'] = arg.upper()
             elif opt == "--write_psi": param_dict['write_psi'] = arg.upper()
             elif opt == "--write_pst": param_dict['write_pst'] = arg.upper()
@@ -120,6 +129,25 @@ def parse_param():
         sys.exit(2)
     elif param_dict['joint_chromosomes'] not in ('TRUE', 'FALSE'):
         print('* --joint_chromosomes must be True or False\n')
+        sys.exit(2)
+    elif param_dict['project_sumstats'] not in ('TRUE', 'FALSE'):
+        print('* --project_sumstats must be True or False\n')
+        sys.exit(2)
+    elif not (math.isfinite(param_dict['projection_fraction']) and
+              0 <= param_dict['projection_fraction'] < 1):
+        print('* --projection_fraction must be in [0, 1)\n')
+        sys.exit(2)
+    elif not (math.isfinite(param_dict['projection_min_eigenvalue']) and
+              param_dict['projection_min_eigenvalue'] >= 0):
+        print('* --projection_min_eigenvalue must be finite and non-negative\n')
+        sys.exit(2)
+    elif (param_dict['project_sumstats'] == 'TRUE' and
+          param_dict['ld_cache_dir'] is not None):
+        print(
+            '* experimental projected summary statistics cannot be combined '
+            'with --ld_cache_dir because the cache does not retain the '
+            'projection basis\n'
+        )
         sys.exit(2)
     elif param_dict['backend'] not in ('cpu', 'cuda'):
         print('* --backend must be cpu or cuda\n')
@@ -171,7 +199,14 @@ def _load_chromosome(param_dict, chrom):
     )
     ld_blk, blk_size = parse_genet.parse_ldblk(
         param_dict['ref_dir'], sst_dict, chrom,
-        cache_dir=param_dict['ld_cache_dir'],
+        cache_dir=param_dict.get('ld_cache_dir'),
+        project_sumstats=param_dict.get(
+            'project_sumstats', 'FALSE'
+        ) == 'TRUE',
+        projection_fraction=param_dict.get('projection_fraction', 0.2),
+        projection_min_eigenvalue=(
+            param_dict.get('projection_min_eigenvalue', 0.01)
+        ),
     )
     return {
         'chrom': chrom,
@@ -204,7 +239,16 @@ def _load_joint_chromosomes(param_dict, chromosomes):
         ld_blk, blk_size = parse_genet.parse_ldblk(
             param_dict['ref_dir'], sst_dict, chromosome,
             report_timing=True,
-            cache_dir=param_dict['ld_cache_dir'],
+            cache_dir=param_dict.get('ld_cache_dir'),
+            project_sumstats=param_dict.get(
+                'project_sumstats', 'FALSE'
+            ) == 'TRUE',
+            projection_fraction=param_dict.get(
+                'projection_fraction', 0.2
+            ),
+            projection_min_eigenvalue=(
+                param_dict.get('projection_min_eigenvalue', 0.01)
+            ),
         )
         chromosome_inputs.append({
             'chrom': chromosome,

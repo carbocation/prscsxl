@@ -104,6 +104,20 @@ Joint fitting works with either CPU or CUDA execution. To run the joint model
 on a GPU, add `--backend=cuda` to the command above. The GPU must have enough
 memory to hold the selected chromosomes' LD blocks at the same time.
 
+## Experimental projected summary statistics
+
+`--project_sumstats=TRUE` applies a PRSBridge-style compatibility projection.
+For each filtered LD block, it discards at least the fraction of smallest
+eigenvalues selected by `--projection_fraction` and also discards every
+eigenvalue below `--projection_min_eigenvalue`. It reconstructs the LD matrix
+and projects the matching marginal effects from the identical retained
+eigenspace. The experimental defaults are `0.2` and `0.01`, respectively.
+
+This mode changes the summary-statistic likelihood and is disabled by default.
+It cannot currently be combined with `--ld_cache_dir`, because the existing
+cache stores projected LD matrices but not the eigenvectors required to
+project summary statistics from a different GWAS.
+
 The original PRS-CS README is preserved below.
 
 ---
@@ -224,7 +238,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --project_sumstats=TRUE|FALSE --projection_fraction=FRACTION --projection_min_eigenvalue=VALUE --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -295,6 +309,19 @@ variants, or allele orientation produces a cache miss. The first matching run
 writes a potentially large uncompressed cache; later runs skip the original LD
 read, filtering, and eigendecomposition. No cache is read or written by
 default.
+
+- PROJECT_SUMSTATS (optional): If True, truncate each filtered LD matrix and
+project its marginal effects into the same retained eigenspace. This is an
+experimental compatibility mode inspired by PRSBridge and changes the fitted
+model. Default is False.
+
+- PROJECTION_FRACTION (optional): Minimum fraction of the smallest
+eigenvalues discarded by projected-summary mode. Default is `0.2`.
+
+- PROJECTION_MIN_EIGENVALUE (optional): Discard eigenvalues below this
+absolute threshold in projected-summary mode. Default is `0.01`.
+
+Projected-summary mode cannot currently be combined with LD_CACHE_DIR.
 
 - BACKEND (optional): `cpu` uses exact FP64 LAPACK/BLAS beta sampling and the
 fused Numba GIG sampler, and is the default. `cuda` uses exact FP64 batched

@@ -31,6 +31,56 @@ def _project_ld_psd(ld):
     )
 
 
+def _truncate_ld_and_project_sumstats(
+        ld, beta_marginal, fraction=0.2, min_eigenvalue=0.01):
+    """Truncate LD and project marginal effects into the retained space."""
+    fraction = float(fraction)
+    min_eigenvalue = float(min_eigenvalue)
+    if not np.isfinite(fraction) or not 0.0 <= fraction < 1.0:
+        raise ValueError('projection fraction must be in [0, 1)')
+    if not np.isfinite(min_eigenvalue) or min_eigenvalue < 0.0:
+        raise ValueError(
+            'projection minimum eigenvalue must be finite and non-negative'
+        )
+
+    ld = np.asarray(ld, dtype=np.float64)
+    beta_marginal = np.asarray(beta_marginal, dtype=np.float64).reshape(-1)
+    if ld.ndim != 2 or ld.shape[0] != ld.shape[1]:
+        raise ValueError('LD block must be a square matrix')
+    if beta_marginal.size != ld.shape[0]:
+        raise ValueError(
+            'marginal effects and LD block must have equal dimensions'
+        )
+
+    symmetric_ld = (ld + ld.T) * 0.5
+    eigenvalues, eigenvectors = linalg.eigh(
+        symmetric_ld, check_finite=False
+    )
+    discard_count = max(
+        int(np.count_nonzero(eigenvalues < min_eigenvalue)),
+        int(np.floor(eigenvalues.size * fraction)),
+    )
+    retained_values = eigenvalues[discard_count:]
+    retained_vectors = eigenvectors[:, discard_count:]
+
+    if not retained_values.size:
+        return (
+            np.asfortranarray(np.zeros_like(symmetric_ld)),
+            np.zeros_like(beta_marginal),
+        )
+
+    retained_values = np.maximum(retained_values, 0.0)
+    projected_ld = np.asfortranarray(np.dot(
+        retained_vectors * retained_values[None, :],
+        retained_vectors.T,
+    ))
+    projected_beta = np.dot(
+        retained_vectors,
+        np.dot(retained_vectors.T, beta_marginal),
+    )
+    return projected_ld, projected_beta
+
+
 def parse_ref(ref_file, chrom):
     print('... parse reference file: %s ...' % ref_file)
 
@@ -447,10 +497,28 @@ def _write_ld_cache(cache_file, cache_key, ld_blk, blk_size):
 
 
 def parse_ldblk(ldblk_dir, sst_dict, chrom, report_timing=False,
-                cache_dir=None):
+                cache_dir=None, project_sumstats=False,
+                projection_fraction=0.2,
+                projection_min_eigenvalue=0.01):
     print('... parse reference LD on chromosome %d ...' % chrom)
     total_started = time.perf_counter()
     chr_name = _ldblk_filename(ldblk_dir, chrom)
+
+    if isinstance(project_sumstats, str):
+        project_sumstats = project_sumstats.upper() == 'TRUE'
+    else:
+        project_sumstats = bool(project_sumstats)
+    if project_sumstats:
+        if cache_dir is not None:
+            raise ValueError(
+                'projected summary statistics cannot use the projected LD '
+                'cache because it does not retain the projection basis'
+            )
+        if len(sst_dict.get('BETA', [])) != len(sst_dict['SNP']):
+            raise ValueError(
+                'projected summary statistics require one marginal effect '
+                'per selected SNP'
+            )
 
     cache_file = None
     cache_key = None
@@ -504,7 +572,18 @@ def parse_ldblk(ldblk_dir, sst_dict, chrom, report_timing=False,
             ld_blk[blk] = ld_blk[blk][np.ix_(idx,idx)]*np.outer(flip,flip)
 
             projection_started = time.perf_counter()
-            ld_blk[blk] = _project_ld_psd(ld_blk[blk])
+            if project_sumstats:
+                beta_slice = slice(mm, mm + len(idx))
+                ld_blk[blk], projected_beta = \
+                    _truncate_ld_and_project_sumstats(
+                        ld_blk[blk],
+                        sst_dict['BETA'][beta_slice],
+                        fraction=projection_fraction,
+                        min_eigenvalue=projection_min_eigenvalue,
+                    )
+                sst_dict['BETA'][beta_slice] = projected_beta.tolist()
+            else:
+                ld_blk[blk] = _project_ld_psd(ld_blk[blk])
             projection_elapsed += time.perf_counter() - projection_started
 
             mm += len(idx)
