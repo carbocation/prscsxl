@@ -18,6 +18,14 @@ import mcmc_gtb
 import parse_genet
 
 
+def _cuda_available():
+    try:
+        import cupy as cp
+        return cp.cuda.runtime.getDeviceCount() > 0
+    except Exception:
+        return False
+
+
 def _summary(chromosome, snps):
     size = len(snps)
     return {
@@ -50,6 +58,27 @@ class JointChromosomeCliTests(unittest.TestCase):
 
         self.assertEqual(parameters['joint_chromosomes'], 'TRUE')
         self.assertEqual(parameters['ld_cache_dir'], '/tmp/ld-cache')
+
+    def test_chromosome_sigma_scope_requires_joint_sampling(self):
+        base = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+            '--sigma_scope=chromosome',
+        ]
+        with mock.patch.object(sys, 'argv', base):
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, '2'):
+                    PRScs.parse_param()
+
+        with mock.patch.object(
+                sys, 'argv', base + ['--joint_chromosomes=true']):
+            with contextlib.redirect_stdout(io.StringIO()):
+                parameters = PRScs.parse_param()
+        self.assertEqual(parameters['sigma_scope'], 'chromosome')
 
     def test_invalid_joint_chromosomes_value_is_rejected(self):
         argv = [
@@ -147,6 +176,9 @@ class JointChromosomeInputTests(unittest.TestCase):
         self.assertEqual(combined['blk_size'], [2, 3])
         self.assertEqual(
             combined['chromosome_slices'], [(1, 0, 2), (2, 2, 5)]
+        )
+        self.assertEqual(
+            combined['chromosome_block_slices'], [(1, 0, 1), (2, 1, 2)]
         )
 
     def test_empty_selected_chromosome_is_rejected(self):
@@ -256,6 +288,113 @@ class _FixedPsiBackend:
 
 
 class JointChromosomeSamplerTests(unittest.TestCase):
+    def _run_actual_chromosome_sigma_sampler(self, backend):
+        summary = _summary(1, ['rs1', 'rs2'])
+        second = _summary(2, ['rs3'])
+        for key in summary:
+            summary[key].extend(second[key])
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, 'actual-' + backend)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                mcmc_gtb.mcmc(
+                    1.0, 0.5, 0.1, summary, 100,
+                    [np.eye(2), np.eye(1)], [2, 1],
+                    2, 0, 1, [1, 2], output, 'TRUE',
+                    'FALSE', 'FALSE', 123,
+                    chromosome_slices=[(1, 0, 2), (2, 2, 3)],
+                    chromosome_block_slices=[(1, 0, 1), (2, 1, 2)],
+                    sigma_scope='chromosome', backend=backend,
+                    cuda_streams=2,
+                )
+
+            chromosome_one = (
+                output + '_pst_eff_a1_b0.5_phi1e-01_chr1.txt'
+            )
+            chromosome_two = (
+                output + '_pst_eff_a1_b0.5_phi1e-01_chr2.txt'
+            )
+            with open(chromosome_one) as ff:
+                self.assertEqual(len(ff.readlines()), 2)
+            with open(chromosome_two) as ff:
+                self.assertEqual(len(ff.readlines()), 1)
+        self.assertIn(
+            'sigma residual safeguard: 0/4 chromosome-iteration '
+            'activations', stdout.getvalue()
+        )
+
+    def test_actual_cpu_chromosome_sigma_sampler(self):
+        self._run_actual_chromosome_sigma_sampler('cpu')
+
+    @unittest.skipUnless(
+        _cuda_available(), 'CuPy and a CUDA device are required'
+    )
+    def test_actual_cuda_chromosome_sigma_sampler(self):
+        self._run_actual_chromosome_sigma_sampler('cuda')
+
+    def test_chromosome_sigma_updates_separately_but_phi_once(self):
+        summary = _summary(1, ['rs1', 'rs2'])
+        second = _summary(2, ['rs3', 'rs4', 'rs5'])
+        for key in summary:
+            summary[key].extend(second[key])
+
+        def beta_backend(_backend, _blocks, _sizes, beta_mrg, _n,
+                         **_kwargs):
+            return _FixedBetaBackend(len(beta_mrg))
+
+        beta_factory = mock.Mock(side_effect=beta_backend)
+        psi_factory = mock.Mock(side_effect=[
+            _FixedPsiBackend(), _FixedPsiBackend()
+        ])
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, 'chromosome-sigma')
+            with mock.patch.object(
+                    mcmc_gtb, 'make_beta_backend', beta_factory):
+                with mock.patch.object(
+                        mcmc_gtb, 'make_psi_backend', psi_factory):
+                    with mock.patch.object(
+                            mcmc_gtb.np.random, 'gamma',
+                            return_value=1.0) as gamma:
+                        stdout = io.StringIO()
+                        with contextlib.redirect_stdout(stdout):
+                            mcmc_gtb.mcmc(
+                                1.0, 0.5, None, summary, 100,
+                                [np.eye(2), np.eye(3)], [2, 3],
+                                1, 0, 1, [1, 2], output, 'TRUE',
+                                'FALSE', 'FALSE', 123,
+                                chromosome_slices=[(1, 0, 2), (2, 2, 5)],
+                                chromosome_block_slices=[
+                                    (1, 0, 1), (2, 1, 2)
+                                ],
+                                sigma_scope='chromosome', backend='cuda',
+                            )
+
+        self.assertEqual(beta_factory.call_count, 2)
+        self.assertEqual(psi_factory.call_count, 2)
+        self.assertEqual(gamma.call_count, 4)
+        self.assertAlmostEqual(gamma.call_args_list[0].args[0], 51.0)
+        self.assertAlmostEqual(gamma.call_args_list[1].args[0], 51.5)
+        self.assertAlmostEqual(gamma.call_args_list[3].args[0], 3.0)
+        self.assertAlmostEqual(
+            gamma.call_args_list[3].args[1], 1.0 / 13.0
+        )
+        self.assertIn(
+            'sigma residual safeguard: 0/2 chromosome-iteration '
+            'activations', stdout.getvalue()
+        )
+
+    def test_chromosome_sigma_keeps_zero_sized_ld_blocks_in_partition(self):
+        inputs = mcmc_gtb._chromosome_sampler_inputs(
+            [(1, 0, 2), (2, 2, 3)],
+            [(1, 0, 3), (2, 3, 5)],
+            [np.array([]), np.eye(2), np.array([]), np.eye(1), np.array([])],
+            [0, 2, 0, 1, 0],
+        )
+        self.assertEqual(inputs[0]['blk_size'], [0, 2, 0])
+        self.assertEqual(inputs[1]['blk_size'], [1, 0])
+
     def test_sigma_residual_safeguard_reports_material_activations(self):
         summary = _summary(1, ['rs1'])
         summary['BETA'][0] = 1.0

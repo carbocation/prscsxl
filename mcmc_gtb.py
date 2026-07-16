@@ -53,6 +53,71 @@ def _chromosome_partitions(chrom, chromosome_slices, p):
     return partitions
 
 
+def _chromosome_sampler_inputs(partitions, chromosome_block_slices,
+                               ld_blk, blk_size):
+    """Match chromosome variant slices to their contiguous LD blocks."""
+    if chromosome_block_slices is None:
+        raise ValueError(
+            'chromosome-specific sigma requires chromosome LD block slices'
+        )
+    if len(chromosome_block_slices) != len(partitions):
+        raise ValueError(
+            'chromosome variant and LD block slices must have equal length'
+        )
+
+    inputs = []
+    expected_block_start = 0
+    for partition, block_partition in zip(
+            partitions, chromosome_block_slices):
+        chromosome, start, stop = partition
+        block_chromosome, block_start, block_stop = block_partition
+        block_chromosome = int(block_chromosome)
+        block_start = int(block_start)
+        block_stop = int(block_stop)
+        if chromosome != block_chromosome:
+            raise ValueError(
+                'chromosome variant and LD block slices must have matching '
+                'chromosomes'
+            )
+        if (block_start != expected_block_start or
+                block_stop < block_start or block_stop > len(ld_blk)):
+            raise ValueError(
+                'chromosome LD block slices must be contiguous and cover '
+                'every LD block'
+            )
+        chromosome_sizes = blk_size[block_start:block_stop]
+        if sum(chromosome_sizes) != stop - start:
+            raise ValueError(
+                'LD blocks do not cover every SNP on chromosome %d' %
+                chromosome
+            )
+        inputs.append({
+            'chromosome': chromosome,
+            'start': start,
+            'stop': stop,
+            'ld_blk': ld_blk[block_start:block_stop],
+            'blk_size': chromosome_sizes,
+        })
+        expected_block_start = block_stop
+
+    if expected_block_start != len(ld_blk) or len(ld_blk) != len(blk_size):
+        raise ValueError(
+            'chromosome LD block slices must cover every LD block'
+        )
+    return inputs
+
+
+def _sampler_seeds(seed, count, salt):
+    """Derive reproducible independent seeds for chromosome CUDA RNGs."""
+    if seed is None:
+        return [None] * count
+    sequence = np.random.SeedSequence([int(seed), int(salt)])
+    return [
+        int(child.generate_state(1, dtype=np.uint32)[0])
+        for child in sequence.spawn(count)
+    ]
+
+
 def _profile_label(partitions, joint_chromosomes):
     if not joint_chromosomes:
         return 'chr%d' % partitions[0][0]
@@ -98,7 +163,8 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
          thin, chrom, out_dir, beta_std, write_psi, write_pst, seed,
          chromosome_slices=None, backend='cpu', cuda_device=0,
          cuda_bucket_size=32, cuda_streams=4, profile='FALSE',
-         cuda_gig_max_rounds=1000):
+         cuda_gig_max_rounds=1000, chromosome_block_slices=None,
+         sigma_scope='global'):
     print('... MCMC ...')
 
     # seed
@@ -116,6 +182,20 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     joint_chromosomes = chromosome_slices is not None
     partitions = _chromosome_partitions(chrom, chromosome_slices, p)
     profile_label = _profile_label(partitions, joint_chromosomes)
+    sigma_scope = str(sigma_scope).lower()
+    if sigma_scope not in ('global', 'chromosome'):
+        raise ValueError('sigma_scope must be global or chromosome')
+    chromosome_sigma = sigma_scope == 'chromosome'
+    if chromosome_sigma and not joint_chromosomes:
+        raise ValueError(
+            'chromosome-specific sigma requires joint chromosome sampling'
+        )
+    chromosome_inputs = (
+        _chromosome_sampler_inputs(
+            partitions, chromosome_block_slices, ld_blk, blk_size
+        )
+        if chromosome_sigma else None
+    )
 
     if joint_chromosomes:
         print(
@@ -128,7 +208,10 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     # initialization
     beta = np.zeros((p,1))
     psi = np.ones((p,1))
-    sigma = 1.0
+    sigma = (
+        np.ones(len(partitions), dtype=np.float64)
+        if chromosome_sigma else 1.0
+    )
     
     if phi == None:
         phi = 1.0; phi_updt = True
@@ -140,22 +223,74 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
 
     beta_est = np.zeros((p,1))
     psi_est = np.zeros((p,1))
-    sigma_est = 0.0
+    sigma_est = np.zeros_like(sigma) if chromosome_sigma else 0.0
     phi_est = 0.0
 
-    beta_sampler = make_beta_backend(
-        backend, ld_blk, blk_size, beta_mrg, n,
-        seed=seed, cuda_device=cuda_device,
-        cuda_bucket_size=cuda_bucket_size,
-        cuda_streams=cuda_streams,
-        profile=profile,
-    )
-    print('... beta backend: %s ...' % beta_sampler.describe())
-    psi_sampler = make_psi_backend(
-        backend, p, seed=seed, cuda_device=cuda_device,
-        cuda_gig_max_rounds=cuda_gig_max_rounds,
-    )
-    print('... psi backend: %s ...' % psi_sampler.describe())
+    if chromosome_sigma:
+        beta_seeds = _sampler_seeds(seed, len(partitions), 1)
+        psi_seeds = _sampler_seeds(seed, len(partitions), 2)
+        beta_samplers = [
+            make_beta_backend(
+                backend,
+                chromosome_input['ld_blk'],
+                chromosome_input['blk_size'],
+                beta_mrg[
+                    chromosome_input['start']:chromosome_input['stop']
+                ],
+                n,
+                seed=beta_seed,
+                cuda_device=cuda_device,
+                cuda_bucket_size=cuda_bucket_size,
+                cuda_streams=cuda_streams,
+                profile='FALSE',
+            )
+            for chromosome_input, beta_seed in zip(
+                chromosome_inputs, beta_seeds
+            )
+        ]
+        if str(backend).lower() == 'cpu':
+            cpu_psi_sampler = make_psi_backend(
+                backend, p, seed=seed, cuda_device=cuda_device,
+                cuda_gig_max_rounds=cuda_gig_max_rounds,
+            )
+            psi_samplers = [cpu_psi_sampler] * len(partitions)
+        else:
+            psi_samplers = [
+                make_psi_backend(
+                    backend,
+                    chromosome_input['stop'] - chromosome_input['start'],
+                    seed=psi_seed,
+                    cuda_device=cuda_device,
+                    cuda_gig_max_rounds=cuda_gig_max_rounds,
+                )
+                for chromosome_input, psi_seed in zip(
+                    chromosome_inputs, psi_seeds
+                )
+            ]
+        print(
+            '... beta backend: %d chromosome-specific samplers '
+            '(representative: %s) ...' %
+            (len(beta_samplers), beta_samplers[0].describe())
+        )
+        print(
+            '... psi backend: %d chromosome-specific samplers '
+            '(representative: %s) ...' %
+            (len(psi_samplers), psi_samplers[0].describe())
+        )
+    else:
+        beta_sampler = make_beta_backend(
+            backend, ld_blk, blk_size, beta_mrg, n,
+            seed=seed, cuda_device=cuda_device,
+            cuda_bucket_size=cuda_bucket_size,
+            cuda_streams=cuda_streams,
+            profile=profile,
+        )
+        print('... beta backend: %s ...' % beta_sampler.describe())
+        psi_sampler = make_psi_backend(
+            backend, p, seed=seed, cuda_device=cuda_device,
+            cuda_gig_max_rounds=cuda_gig_max_rounds,
+        )
+        print('... psi backend: %s ...' % psi_sampler.describe())
     profile = str(profile).upper() == 'TRUE'
     profile_beta = 0.0
     profile_psi = 0.0
@@ -174,38 +309,127 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
             print('--- iter-' + str(itr) + ' ---')
 
         beta_start = time.perf_counter()
-        beta, quad = beta_sampler.sample(psi, sigma)
+        if chromosome_sigma:
+            for sigma_index, (chromosome_input, sampler) in enumerate(zip(
+                    chromosome_inputs, beta_samplers)):
+                start = chromosome_input['start']
+                stop = chromosome_input['stop']
+                chromosome_beta, chromosome_quad = sampler.sample(
+                    psi[start:stop], sigma[sigma_index]
+                )
+                beta[start:stop] = chromosome_beta
+
+                chromosome_beta_mrg = beta_mrg[start:stop]
+                chromosome_psi = psi[start:stop]
+                s1 = float((chromosome_beta * chromosome_beta_mrg).sum())
+                s2 = float(
+                    (chromosome_beta**2 / chromosome_psi).sum()
+                )
+                e1 = float(
+                    n/2.0*(1.0 - 2.0*s1 + chromosome_quad)
+                )
+                e2 = float(n/2.0*s2)
+                relative_deficit = _sigma_floor_relative_deficit(
+                    e1, e2, itr
+                )
+                if relative_deficit is not None:
+                    sigma_floor_count += 1
+                    if sigma_floor_first_iteration is None:
+                        sigma_floor_first_iteration = itr
+                    sigma_floor_worst_relative = max(
+                        sigma_floor_worst_relative, relative_deficit
+                    )
+                    if (relative_deficit >
+                            _SIGMA_FLOOR_RELATIVE_TOLERANCE):
+                        sigma_floor_material_count += 1
+                err = max(e1, e2)
+                chromosome = chromosome_input['chromosome']
+                if err <= 0.0:
+                    raise FloatingPointError(
+                        'non-positive sigma rate at iteration %d on '
+                        'chromosome %d: %r' % (itr, chromosome, err)
+                    )
+                chromosome_size = stop - start
+                sigma[sigma_index] = float(
+                    1.0 / np.random.gamma(
+                        (n + chromosome_size) / 2.0, 1.0 / err
+                    )
+                )
+                if (not np.isfinite(sigma[sigma_index]) or
+                        sigma[sigma_index] <= 0.0):
+                    raise FloatingPointError(
+                        'invalid sigma draw at iteration %d on chromosome '
+                        '%d: %r' %
+                        (itr, chromosome, sigma[sigma_index])
+                    )
+        else:
+            beta, quad = beta_sampler.sample(psi, sigma)
+            s1 = float((beta * beta_mrg).sum())
+            s2 = float((beta**2 / psi).sum())
+            e1 = float(n/2.0*(1.0 - 2.0*s1 + quad))
+            e2 = float(n/2.0*s2)
+            relative_deficit = _sigma_floor_relative_deficit(e1, e2, itr)
+            if relative_deficit is not None:
+                sigma_floor_count += 1
+                if sigma_floor_first_iteration is None:
+                    sigma_floor_first_iteration = itr
+                sigma_floor_worst_relative = max(
+                    sigma_floor_worst_relative, relative_deficit
+                )
+                if relative_deficit > _SIGMA_FLOOR_RELATIVE_TOLERANCE:
+                    sigma_floor_material_count += 1
+            err = max(e1, e2)
+            if err <= 0.0:
+                raise FloatingPointError(
+                    'non-positive sigma rate at iteration %d: %r' %
+                    (itr, err)
+                )
+
+            # force sigma to be a Python float (not a 0-d array)
+            sigma = float(1.0/np.random.gamma((n+p)/2.0, 1.0/err))
+            if not np.isfinite(sigma) or sigma <= 0.0:
+                raise FloatingPointError(
+                    'invalid sigma draw at iteration %d: %r' % (itr, sigma)
+                )
         beta_elapsed = time.perf_counter() - beta_start
 
-        s1 = float((beta * beta_mrg).sum())
-        s2 = float((beta**2 / psi).sum())
-        e1 = float(n/2.0*(1.0 - 2.0*s1 + quad))
-        e2 = float(n/2.0*s2)
-        relative_deficit = _sigma_floor_relative_deficit(e1, e2, itr)
-        if relative_deficit is not None:
-            sigma_floor_count += 1
-            if sigma_floor_first_iteration is None:
-                sigma_floor_first_iteration = itr
-            sigma_floor_worst_relative = max(
-                sigma_floor_worst_relative, relative_deficit
-            )
-            if relative_deficit > _SIGMA_FLOOR_RELATIVE_TOLERANCE:
-                sigma_floor_material_count += 1
-        err = max(e1, e2)
-        if err <= 0.0:
-            raise FloatingPointError(
-                'non-positive sigma rate at iteration %d: %r' % (itr, err)
-            )
-
-        # force sigma to be a Python float (not a 0-d array)
-        sigma = float(1.0/np.random.gamma((n+p)/2.0, 1.0/err))
-        if not np.isfinite(sigma) or sigma <= 0.0:
-            raise FloatingPointError(
-                'invalid sigma draw at iteration %d: %r' % (itr, sigma)
-            )
-
-        if hasattr(psi_sampler, 'sample_joint'):
-            psi_start = time.perf_counter()
+        psi_start = time.perf_counter()
+        if chromosome_sigma:
+            if hasattr(psi_samplers[0], 'sample_joint'):
+                delta_sum = 0.0 if phi_updt else None
+                for sigma_index, (chromosome_input, sampler) in enumerate(
+                        zip(chromosome_inputs, psi_samplers)):
+                    start = chromosome_input['start']
+                    stop = chromosome_input['stop']
+                    chromosome_delta_sum = sampler.sample_joint(
+                        psi[start:stop, 0],
+                        float(a - 0.5),
+                        float(a + b),
+                        psi[start:stop, 0],
+                        float(phi),
+                        beta[start:stop, 0],
+                        float(sigma[sigma_index]),
+                        int(n),
+                        need_delta_sum=phi_updt,
+                    )
+                    if phi_updt:
+                        delta_sum += float(chromosome_delta_sum)
+            else:
+                delta = np.random.gamma(a+b, 1.0/(psi+phi))
+                for sigma_index, (chromosome_input, sampler) in enumerate(
+                        zip(chromosome_inputs, psi_samplers)):
+                    start = chromosome_input['start']
+                    stop = chromosome_input['stop']
+                    sampler.sample(
+                        psi[start:stop, 0],
+                        float(a - 0.5),
+                        delta[start:stop, 0],
+                        beta[start:stop, 0],
+                        float(sigma[sigma_index]),
+                        int(n),
+                    )
+                delta_sum = float(delta.sum()) if phi_updt else None
+        elif hasattr(psi_sampler, 'sample_joint'):
             delta_sum = psi_sampler.sample_joint(
                 psi[:, 0],
                 float(a - 0.5),
@@ -219,7 +443,6 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
             )
         else:
             delta = np.random.gamma(a+b, 1.0/(psi+phi))
-            psi_start = time.perf_counter()
             psi_sampler.sample(
                 psi[:, 0],
                 float(a - 0.5),
@@ -335,24 +558,34 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     if phi_updt == True:
         print('... Estimated global shrinkage parameter: %1.2e ...' % phi_est )
 
+    sigma_floor_trials = (
+        n_iter * len(partitions) if chromosome_sigma else n_iter
+    )
+    activation_kind = (
+        ' chromosome-iteration' if chromosome_sigma else ''
+    )
     if sigma_floor_count:
         print(
-            '... WARNING: sigma residual safeguard: %d/%d activations '
+            '... WARNING: sigma residual safeguard: %d/%d%s activations '
             '(%d material; first iteration %d; worst relative deficit '
             '%.3e) ...' % (
-                sigma_floor_count, n_iter, sigma_floor_material_count,
+                sigma_floor_count, sigma_floor_trials, activation_kind,
+                sigma_floor_material_count,
                 sigma_floor_first_iteration, sigma_floor_worst_relative,
             )
         )
     else:
         print(
-            '... sigma residual safeguard: 0/%d activations ...' % n_iter
+            '... sigma residual safeguard: 0/%d%s activations ...' %
+            (sigma_floor_trials, activation_kind)
         )
 
-    if profile and hasattr(beta_sampler, 'profile_summary'):
+    if (not chromosome_sigma and profile and
+            hasattr(beta_sampler, 'profile_summary')):
         print('[PROFILE %s] %s' %
               (profile_label, beta_sampler.profile_summary()))
-    if profile and hasattr(psi_sampler, 'profile_summary'):
+    if (not chromosome_sigma and profile and
+            hasattr(psi_sampler, 'profile_summary')):
         print('[PROFILE %s] %s' %
               (profile_label, psi_sampler.profile_summary()))
 

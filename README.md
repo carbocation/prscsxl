@@ -104,6 +104,17 @@ Joint fitting works with either CPU or CUDA execution. To run the joint model
 on a GPU, add `--backend=cuda` to the command above. The GPU must have enough
 memory to hold the selected chromosomes' LD blocks at the same time.
 
+### Experimental chromosome-specific residual variance
+
+Joint sampling uses one genome-wide residual variance by default. The opt-in
+`--sigma_scope=chromosome` mode instead samples one residual variance for each
+selected chromosome while retaining a single genome-wide `phi` update. Beta
+and local-shrinkage updates on a chromosome use that chromosome's current
+residual variance, and the chromosome delta totals are combined for the global
+shrinkage update. This is an explicit partial-pooling model intended for
+experiments with external-LD summary statistics; it is not the written
+single-sigma PRS-CS model.
+
 The original PRS-CS README is preserved below.
 
 ---
@@ -224,7 +235,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --sigma_scope=global|chromosome --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -287,6 +298,12 @@ where SNP is the rs ID, A1 is the effect allele, A2 is the alternative allele, B
  - CHROM (optional): The chromosome(s) on which the model is fitted, separated by comma, e.g., `--chrom=1,3,5`. Parallel computation for the 22 autosomes is recommended. Default is iterating through 22 autosomes (can be time-consuming).
 
 - JOINT_CHROMOSOMES (optional): If True, fit the selected chromosomes in one MCMC chain with shared global parameters. Default is False.
+
+- SIGMA_SCOPE (optional): `global` samples one residual variance for the joint
+chain and is the default. `chromosome` samples one residual variance per
+selected chromosome while keeping the automatic `phi` update genome-wide.
+The chromosome setting requires JOINT_CHROMOSOMES=True and defines an
+experimental partial-pooling model.
 
 - LD_CACHE_DIR (optional): Directory for persistent filtered and PSD-projected
 LD caches. Entries are keyed by the source LD file metadata and the exact
