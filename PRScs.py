@@ -11,7 +11,7 @@ Reference: T Ge, CY Chen, Y Ni, YCA Feng, JW Smoller. Polygenic Prediction via B
 Usage:
 python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR
                 [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR
-                 --chrom=CHROM --joint_chromosomes=TRUE|FALSE --sigma_scope=global|chromosome --ld_cache_dir=PATH
+                 --chrom=CHROM --chromosome_model=independent|joint-global-sigma|joint-chromosome-sigma --ld_cache_dir=PATH
                  --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED
                  --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS
                  --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE
@@ -29,15 +29,21 @@ import parse_genet
 import mcmc_gtb
 
 
+CHROMOSOME_MODELS = (
+    'independent',
+    'joint-global-sigma',
+    'joint-chromosome-sigma',
+)
+
+
 def parse_param():
     long_opts_list = ['ref_dir=', 'bim_prefix=', 'sst_file=', 'a=', 'b=', 'phi=', 'n_gwas=',
-                      'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'joint_chromosomes=', 'sigma_scope=', 'ld_cache_dir=', 'beta_std=', 'write_psi=', 'write_pst=', 'seed=',
+                      'n_iter=', 'n_burnin=', 'thin=', 'out_dir=', 'chrom=', 'chromosome_model=', 'ld_cache_dir=', 'beta_std=', 'write_psi=', 'write_pst=', 'seed=',
                       'backend=', 'cuda_device=', 'cuda_bucket_size=', 'cuda_streams=', 'cuda_gig_max_rounds=', 'ld_diagnostics=', 'ld_rank_tol=', 'profile=', 'help']
 
     param_dict = {'ref_dir': None, 'bim_prefix': None, 'sst_file': None, 'a': 1, 'b': 0.5, 'phi': None, 'n_gwas': None,
                   'n_iter': 1000, 'n_burnin': 500, 'thin': 5, 'out_dir': None, 'chrom': range(1,23),
-                  'joint_chromosomes': 'FALSE',
-                  'sigma_scope': 'global',
+                  'chromosome_model': 'independent',
                   'ld_cache_dir': None,
                   'beta_std': 'FALSE', 'write_psi': 'FALSE', 'write_pst': 'FALSE', 'seed': None,
                   'backend': 'cpu', 'cuda_device': 0,
@@ -71,8 +77,7 @@ def parse_param():
             elif opt == "--thin": param_dict['thin'] = int(arg)
             elif opt == "--out_dir": param_dict['out_dir'] = arg
             elif opt == "--chrom": param_dict['chrom'] = arg.split(',')
-            elif opt == "--joint_chromosomes": param_dict['joint_chromosomes'] = arg.upper()
-            elif opt == "--sigma_scope": param_dict['sigma_scope'] = arg.lower()
+            elif opt == "--chromosome_model": param_dict['chromosome_model'] = arg.lower()
             elif opt == "--ld_cache_dir": param_dict['ld_cache_dir'] = arg
             elif opt == "--beta_std": param_dict['beta_std'] = arg.upper()
             elif opt == "--write_psi": param_dict['write_psi'] = arg.upper()
@@ -120,17 +125,10 @@ def parse_param():
             '--n_iter or decrease --n_burnin or --thin\n'
         )
         sys.exit(2)
-    elif param_dict['joint_chromosomes'] not in ('TRUE', 'FALSE'):
-        print('* --joint_chromosomes must be True or False\n')
-        sys.exit(2)
-    elif param_dict['sigma_scope'] not in ('global', 'chromosome'):
-        print('* --sigma_scope must be global or chromosome\n')
-        sys.exit(2)
-    elif (param_dict['sigma_scope'] == 'chromosome' and
-          param_dict['joint_chromosomes'] != 'TRUE'):
+    elif param_dict['chromosome_model'] not in CHROMOSOME_MODELS:
         print(
-            '* --sigma_scope=chromosome requires '
-            '--joint_chromosomes=TRUE\n'
+            '* --chromosome_model must be independent, '
+            'joint-global-sigma, or joint-chromosome-sigma\n'
         )
         sys.exit(2)
     elif param_dict['backend'] not in ('cpu', 'cuda'):
@@ -306,7 +304,9 @@ def _run_mcmc(param_dict, chromosome_input, chrom,
         param_dict['write_psi'], param_dict['write_pst'],
         param_dict['seed'], chromosome_slices=chromosome_slices,
         chromosome_block_slices=chromosome_block_slices,
-        sigma_scope=param_dict.get('sigma_scope', 'global'),
+        chromosome_model=param_dict.get(
+            'chromosome_model', 'independent'
+        ),
         backend=param_dict['backend'],
         cuda_device=param_dict['cuda_device'],
         cuda_bucket_size=param_dict['cuda_bucket_size'],
@@ -334,7 +334,7 @@ def main():
     param_dict = parse_param()
     chromosomes = [int(chrom) for chrom in param_dict['chrom']]
 
-    if param_dict['joint_chromosomes'] == 'TRUE':
+    if param_dict['chromosome_model'] != 'independent':
         print(
             '##### jointly process chromosomes %s #####' %
             ','.join(str(chrom) for chrom in chromosomes)

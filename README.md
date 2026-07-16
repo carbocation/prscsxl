@@ -85,7 +85,7 @@ python3 PRScs.py \
 
 Joint fitting is opt-in because it changes the statistical model and will not
 produce the same posterior draws as separate chromosome fits. To fit all 22
-autosomes jointly:
+autosomes jointly with a shared `phi` but per-chromosome `sigma`:
 
 ```bash
 python3 PRScs.py \
@@ -94,7 +94,7 @@ python3 PRScs.py \
   --sst_file=SUM_STATS_FILE \
   --n_gwas=GWAS_SAMPLE_SIZE \
   --chrom=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22 \
-  --joint_chromosomes=TRUE \
+  --chromosome_model=joint-chromosome-sigma \
   --ld_cache_dir=PATH_TO_LD_CACHE \
   --out_dir=OUTPUT_PREFIX
 ```
@@ -104,16 +104,22 @@ Joint fitting works with either CPU or CUDA execution. To run the joint model
 on a GPU, add `--backend=cuda` to the command above. The GPU must have enough
 memory to hold the selected chromosomes' LD blocks at the same time.
 
-### Experimental chromosome-specific residual variance
+`--chromosome_model` selects the hierarchy explicitly:
 
-Joint sampling uses one genome-wide residual variance by default. The opt-in
-`--sigma_scope=chromosome` mode instead samples one residual variance for each
-selected chromosome while retaining a single genome-wide `phi` update. Beta
-and local-shrinkage updates on a chromosome use that chromosome's current
-residual variance, and the chromosome delta totals are combined for the global
-shrinkage update. This is an explicit partial-pooling model intended for
-experiments with external-LD summary statistics; it is not the written
-single-sigma PRS-CS model.
+- `independent` (default) runs a separate chain for each selected chromosome,
+  with chromosome-specific `phi` and residual variance. This best matches
+  upstream.
+- `joint-global-sigma` runs one chain with a single `phi` and a single residual
+  variance shared across all selected chromosomes. This best matches the
+  manuscript, but in real-world usage seems to run into residual-variance
+  degeneracy (systematically hits the `sigma^2` safeguard activation).
+- `joint-chromosome-sigma` runs one chain with a single `phi` and a separate
+  residual variance for each selected chromosome.
+
+The chromosome-specific residual-variance joint model is intended for
+experiments with external-LD summary statistics. Beta and local-shrinkage
+updates on a chromosome use that chromosome's current residual variance, and the
+chromosome delta totals are combined for the global shrinkage update.
 
 The original PRS-CS README is preserved below.
 
@@ -235,7 +241,7 @@ using GWAS summary statistics and an external LD reference panel.
 ## Using PRS-CS
 
 `
-python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --joint_chromosomes=TRUE|FALSE --sigma_scope=global|chromosome --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
+python PRScs.py --ref_dir=PATH_TO_REFERENCE --bim_prefix=VALIDATION_BIM_PREFIX --sst_file=SUM_STATS_FILE --n_gwas=GWAS_SAMPLE_SIZE --out_dir=OUTPUT_DIR [--a=PARAM_A --b=PARAM_B --phi=PARAM_PHI --n_iter=MCMC_ITERATIONS --n_burnin=MCMC_BURNIN --thin=MCMC_THINNING_FACTOR --chrom=CHROM --chromosome_model=independent|joint-global-sigma|joint-chromosome-sigma --ld_cache_dir=PATH --beta_std=BETA_STD --write_psi=WRITE_PSI --write_pst=WRITE_POSTERIOR_SAMPLES --seed=SEED --backend=cpu|cuda --cuda_device=DEVICE --cuda_bucket_size=SIZE --cuda_streams=STREAMS --cuda_gig_max_rounds=ROUNDS --ld_diagnostics=TRUE|FALSE --ld_rank_tol=TOL --profile=TRUE|FALSE]
 `
  - PATH_TO_REFERENCE (required): Full path (including folder name) to the directory that contains information on the LD reference panel (the snpinfo file and hdf5 files). If the 1000 Genomes reference panel is used, folder name would be `ldblk_1kg_afr`, `ldblk_1kg_amr`, `ldblk_1kg_eas`, `ldblk_1kg_eur` or `ldblk_1kg_sas`; if the UK Biobank reference panel is used, folder name would be `ldblk_ukbb_afr`, `ldblk_ukbb_amr`, `ldblk_ukbb_eas`, `ldblk_ukbb_eur` or `ldblk_ukbb_sas`. Note that the reference panel should match the ancestry of the GWAS sample (not the target sample).
 
@@ -297,13 +303,11 @@ where SNP is the rs ID, A1 is the effect allele, A2 is the alternative allele, B
 
  - CHROM (optional): The chromosome(s) on which the model is fitted, separated by comma, e.g., `--chrom=1,3,5`. Parallel computation for the 22 autosomes is recommended. Default is iterating through 22 autosomes (can be time-consuming).
 
-- JOINT_CHROMOSOMES (optional): If True, fit the selected chromosomes in one MCMC chain with shared global parameters. Default is False.
-
-- SIGMA_SCOPE (optional): `global` samples one residual variance for the joint
-chain and is the default. `chromosome` samples one residual variance per
-selected chromosome while keeping the automatic `phi` update genome-wide.
-The chromosome setting requires JOINT_CHROMOSOMES=True and defines an
-experimental partial-pooling model.
+- CHROMOSOME_MODEL (optional): `independent` runs one chain per chromosome and
+is the default. `joint-global-sigma` runs one chain with genome-wide `phi` and
+residual variance. `joint-chromosome-sigma` runs one chain with genome-wide
+`phi` and one residual variance per chromosome. The two joint models retain
+per-variant local `psi` scales.
 
 - LD_CACHE_DIR (optional): Directory for persistent filtered and PSD-projected
 LD caches. Entries are keyed by the source LD file metadata and the exact
@@ -362,22 +366,24 @@ PRS-CS writes posterior SNP effect size estimates for each chromosome to the use
 
 ### Experimental joint chromosome sampling
 
-`--joint_chromosomes=True` changes the sampling model rather than merely
-scheduling independent chromosome jobs. The selected chromosomes are
-concatenated as block-diagonal LD blocks and updated in one chain, so automatic
-`phi` and `sigma` inference use sufficient statistics from every selected
-chromosome. It never constructs a dense genome-wide LD matrix. For example:
+Selecting either joint value for `--chromosome_model` changes the sampling
+model rather than merely scheduling independent chromosome jobs. The selected
+chromosomes are concatenated as block-diagonal LD blocks and updated in one
+chain. It never constructs a dense genome-wide LD matrix. For example:
 
 ```
-python PRScs.py ... --chrom=1,2,3 --joint_chromosomes=True
+python PRScs.py ... --chrom=1,2,3 --chromosome_model=joint-global-sigma
 ```
 
 Joint sampling preserves the normal `_chrN.txt` output files. Its memory
 requirements are approximately the sum of the chromosome-wise requirements
 because every selected chromosome's LD state is resident at once. The default
-remains False for compatibility with established PRS-CS results. In
-particular, an automatic-`phi` joint run is not expected to reproduce
-independently fitted chromosome chains.
+`independent` model preserves established PRS-CS behavior.
+
+`joint-global-sigma` shares both `phi` and residual variance across the
+selected chromosomes. `joint-chromosome-sigma` shares `phi` but samples a
+separate residual variance for each chromosome. Beta and local-shrinkage
+updates use the corresponding shared or chromosome-specific residual variance.
 
 Joint mode scans the reference and BIM text files once and the summary-
 statistics file twice for all selected chromosomes, rather than repeating
@@ -415,8 +421,8 @@ same FP64 conditional Gaussian beta update using batched Cholesky and
 triangular solves. It also generates each gamma-distributed `delta` and its
 dependent GIG `psi` draw in one CUDA kernel per MCMC iteration. Per iteration,
 only O(number of variants) state is transferred between host and device.
-Chromosomes remain independent jobs unless
-`--joint_chromosomes=True` is also selected.
+Chromosomes remain independent jobs unless a joint `--chromosome_model` is
+selected.
 
 The CUDA backend builds factorization and right-hand-side workspaces and
 device pointer arrays once, then invokes FP64 `potrfBatched` and

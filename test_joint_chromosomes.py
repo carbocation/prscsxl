@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Tests for opt-in joint chromosome sampling."""
+"""Tests for chromosome-model selection and joint sampling."""
 
 
 import contextlib
@@ -41,60 +41,32 @@ def _summary(chromosome, snps):
 
 
 class JointChromosomeCliTests(unittest.TestCase):
-    def test_joint_chromosomes_flag_uses_existing_boolean_style(self):
-        argv = [
+    def _argv(self, option):
+        return [
             'PRScs.py',
             '--ref_dir=/tmp/ldblk_ukbb_eur',
             '--bim_prefix=/tmp/target',
             '--sst_file=/tmp/sumstats',
             '--n_gwas=1000',
             '--out_dir=/tmp/output',
-            '--joint_chromosomes=true',
-            '--ld_cache_dir=/tmp/ld-cache',
+            option,
         ]
-        with mock.patch.object(sys, 'argv', argv):
-            with contextlib.redirect_stdout(io.StringIO()):
-                parameters = PRScs.parse_param()
 
-        self.assertEqual(parameters['joint_chromosomes'], 'TRUE')
-        self.assertEqual(parameters['ld_cache_dir'], '/tmp/ld-cache')
+    def test_all_chromosome_models_are_accepted_case_insensitively(self):
+        for model in PRScs.CHROMOSOME_MODELS:
+            with self.subTest(model=model):
+                argv = self._argv('--chromosome_model=' + model.upper())
+                with mock.patch.object(sys, 'argv', argv):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        parameters = PRScs.parse_param()
+                self.assertEqual(parameters['chromosome_model'], model)
 
-    def test_chromosome_sigma_scope_requires_joint_sampling(self):
-        base = [
-            'PRScs.py',
-            '--ref_dir=/tmp/ldblk_ukbb_eur',
-            '--bim_prefix=/tmp/target',
-            '--sst_file=/tmp/sumstats',
-            '--n_gwas=1000',
-            '--out_dir=/tmp/output',
-            '--sigma_scope=chromosome',
-        ]
-        with mock.patch.object(sys, 'argv', base):
-            with contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(SystemExit, '2'):
-                    PRScs.parse_param()
-
-        with mock.patch.object(
-                sys, 'argv', base + ['--joint_chromosomes=true']):
-            with contextlib.redirect_stdout(io.StringIO()):
-                parameters = PRScs.parse_param()
-        self.assertEqual(parameters['sigma_scope'], 'chromosome')
-
-    def test_invalid_joint_chromosomes_value_is_rejected(self):
-        argv = [
-            'PRScs.py',
-            '--ref_dir=/tmp/ldblk_ukbb_eur',
-            '--bim_prefix=/tmp/target',
-            '--sst_file=/tmp/sumstats',
-            '--n_gwas=1000',
-            '--out_dir=/tmp/output',
-            '--joint_chromosomes=sometimes',
-        ]
+    def test_invalid_chromosome_model_is_rejected(self):
+        argv = self._argv('--chromosome_model=joint')
         with mock.patch.object(sys, 'argv', argv):
             with contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(SystemExit, '2'):
                     PRScs.parse_param()
-
 
 class JointTextParserTests(unittest.TestCase):
     def test_joint_parser_matches_chromosome_wise_allele_alignment(self):
@@ -226,7 +198,7 @@ class JointChromosomeMainTests(unittest.TestCase):
     def test_joint_mode_invokes_one_sampler_for_selected_chromosomes(self):
         parameters = {
             'chrom': [1, 2],
-            'joint_chromosomes': 'TRUE',
+            'chromosome_model': 'joint-global-sigma',
         }
         with mock.patch.object(PRScs, 'parse_param', return_value=parameters):
             with mock.patch.object(
@@ -246,7 +218,7 @@ class JointChromosomeMainTests(unittest.TestCase):
     def test_default_mode_preserves_one_sampler_per_chromosome(self):
         parameters = {
             'chrom': [1, 2],
-            'joint_chromosomes': 'FALSE',
+            'chromosome_model': 'independent',
         }
         with mock.patch.object(PRScs, 'parse_param', return_value=parameters):
             with mock.patch.object(
@@ -305,7 +277,8 @@ class JointChromosomeSamplerTests(unittest.TestCase):
                     'FALSE', 'FALSE', 123,
                     chromosome_slices=[(1, 0, 2), (2, 2, 3)],
                     chromosome_block_slices=[(1, 0, 1), (2, 1, 2)],
-                    sigma_scope='chromosome', backend=backend,
+                    chromosome_model='joint-chromosome-sigma',
+                    backend=backend,
                     cuda_streams=2,
                 )
 
@@ -368,7 +341,10 @@ class JointChromosomeSamplerTests(unittest.TestCase):
                                 chromosome_block_slices=[
                                     (1, 0, 1), (2, 1, 2)
                                 ],
-                                sigma_scope='chromosome', backend='cuda',
+                                chromosome_model=(
+                                    'joint-chromosome-sigma'
+                                ),
+                                backend='cuda',
                             )
 
         self.assertEqual(beta_factory.call_count, 2)
@@ -525,6 +501,7 @@ class JointChromosomeSamplerTests(unittest.TestCase):
                                 1, 0, 1, [1, 2], output, 'TRUE',
                                 'TRUE', 'FALSE', 123,
                                 chromosome_slices=[(1, 0, 2), (2, 2, 5)],
+                                chromosome_model='joint-global-sigma',
                                 backend='cuda',
                             )
 

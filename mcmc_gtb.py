@@ -164,7 +164,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
          chromosome_slices=None, backend='cpu', cuda_device=0,
          cuda_bucket_size=32, cuda_streams=4, profile='FALSE',
          cuda_gig_max_rounds=1000, chromosome_block_slices=None,
-         sigma_scope='global'):
+         chromosome_model='independent'):
     print('... MCMC ...')
 
     # seed
@@ -179,17 +179,26 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     )
     n_pst = len(posterior_iterations)
     p = len(sst_dict['SNP'])
-    joint_chromosomes = chromosome_slices is not None
+    chromosome_model = str(chromosome_model).lower()
+    valid_chromosome_models = (
+        'independent',
+        'joint-global-sigma',
+        'joint-chromosome-sigma',
+    )
+    if chromosome_model not in valid_chromosome_models:
+        raise ValueError(
+            'chromosome_model must be independent, joint-global-sigma, '
+            'or joint-chromosome-sigma'
+        )
+    joint_chromosomes = chromosome_model != 'independent'
+    if joint_chromosomes != (chromosome_slices is not None):
+        raise ValueError(
+            'joint chromosome models require chromosome output slices, '
+            'and independent sampling must not provide them'
+        )
     partitions = _chromosome_partitions(chrom, chromosome_slices, p)
     profile_label = _profile_label(partitions, joint_chromosomes)
-    sigma_scope = str(sigma_scope).lower()
-    if sigma_scope not in ('global', 'chromosome'):
-        raise ValueError('sigma_scope must be global or chromosome')
-    chromosome_sigma = sigma_scope == 'chromosome'
-    if chromosome_sigma and not joint_chromosomes:
-        raise ValueError(
-            'chromosome-specific sigma requires joint chromosome sampling'
-        )
+    chromosome_sigma = chromosome_model == 'joint-chromosome-sigma'
     chromosome_inputs = (
         _chromosome_sampler_inputs(
             partitions, chromosome_block_slices, ld_blk, blk_size
