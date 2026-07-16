@@ -46,6 +46,7 @@ class CommandLineCharacterizationTests(unittest.TestCase):
         self.assertEqual(parameters['n_iter'], 1000)
         self.assertEqual(parameters['n_burnin'], 500)
         self.assertEqual(parameters['thin'], 5)
+        self.assertEqual(parameters['chromosome_model'], 'independent')
         self.assertEqual(parameters['beta_std'], 'FALSE')
         self.assertEqual(parameters['write_psi'], 'FALSE')
         self.assertEqual(parameters['write_pst'], 'FALSE')
