@@ -234,14 +234,16 @@ class JointChromosomeMainTests(unittest.TestCase):
 
 
 class _FixedBetaBackend:
-    def __init__(self, size):
+    def __init__(self, size, beta=0.0, quad=0.0):
         self._size = size
+        self._beta = float(beta)
+        self._quad = float(quad)
 
     def describe(self):
         return 'fixed test beta backend'
 
     def sample(self, psi, sigma):
-        return np.zeros((self._size, 1)), 0.0
+        return np.full((self._size, 1), self._beta), self._quad
 
 
 class _FixedPsiBackend:
@@ -254,6 +256,67 @@ class _FixedPsiBackend:
 
 
 class JointChromosomeSamplerTests(unittest.TestCase):
+    def test_sigma_residual_safeguard_reports_material_activations(self):
+        summary = _summary(1, ['rs1'])
+        summary['BETA'][0] = 1.0
+        beta_factory = mock.Mock(
+            return_value=_FixedBetaBackend(1, beta=1.0, quad=1.0)
+        )
+        psi_factory = mock.Mock(return_value=_FixedPsiBackend())
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, 'sigma-floor')
+            with mock.patch.object(
+                    mcmc_gtb, 'make_beta_backend', beta_factory):
+                with mock.patch.object(
+                        mcmc_gtb, 'make_psi_backend', psi_factory):
+                    with mock.patch.object(
+                            mcmc_gtb.np.random, 'gamma', return_value=1.0):
+                        stdout = io.StringIO()
+                        with contextlib.redirect_stdout(stdout):
+                            mcmc_gtb.mcmc(
+                                1.0, 0.5, 0.1, summary, 100,
+                                [np.eye(1)], [1], 2, 0, 1, 1, output,
+                                'TRUE', 'FALSE', 'FALSE', 123,
+                            )
+
+        self.assertIn(
+            'WARNING: sigma residual safeguard: 2/2 activations '
+            '(2 material; first iteration 1; worst relative deficit ',
+            stdout.getvalue(),
+        )
+
+    def test_sigma_residual_safeguard_reports_clean_run(self):
+        summary = _summary(1, ['rs1'])
+        beta_factory = mock.Mock(return_value=_FixedBetaBackend(1))
+        psi_factory = mock.Mock(return_value=_FixedPsiBackend())
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, 'sigma-clean')
+            with mock.patch.object(
+                    mcmc_gtb, 'make_beta_backend', beta_factory):
+                with mock.patch.object(
+                        mcmc_gtb, 'make_psi_backend', psi_factory):
+                    with mock.patch.object(
+                            mcmc_gtb.np.random, 'gamma', return_value=1.0):
+                        stdout = io.StringIO()
+                        with contextlib.redirect_stdout(stdout):
+                            mcmc_gtb.mcmc(
+                                1.0, 0.5, 0.1, summary, 100,
+                                [np.eye(1)], [1], 1, 0, 1, 1, output,
+                                'TRUE', 'FALSE', 'FALSE', 123,
+                            )
+
+        self.assertIn(
+            'sigma residual safeguard: 0/1 activations', stdout.getvalue()
+        )
+
+    def test_nonfinite_sigma_statistics_fail_with_iteration_context(self):
+        with self.assertRaisesRegex(
+                FloatingPointError,
+                'non-finite sigma sufficient statistic at iteration 7'):
+            mcmc_gtb._sigma_floor_relative_deficit(np.nan, 1.0, 7)
+
     def test_posterior_thinning_is_measured_from_end_of_burnin(self):
         self.assertEqual(
             list(mcmc_gtb._posterior_iterations(10, 3, 4)), [7]

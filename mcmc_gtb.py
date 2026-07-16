@@ -13,6 +13,21 @@ from beta_backend import make_beta_backend
 from psi_backend import make_psi_backend
 
 
+_SIGMA_FLOOR_RELATIVE_TOLERANCE = 1e-10
+
+
+def _sigma_floor_relative_deficit(e1, e2, iteration):
+    """Validate sigma statistics and quantify residual-floor activation."""
+    if not np.isfinite(e1) or not np.isfinite(e2):
+        raise FloatingPointError(
+            'non-finite sigma sufficient statistic at iteration %d: '
+            'e1=%r, e2=%r' % (iteration, e1, e2)
+        )
+    if e2 <= e1:
+        return None
+    return (e2 - e1) / max(abs(e1), abs(e2), 1.0)
+
+
 def _chromosome_partitions(chrom, chromosome_slices, p):
     """Return validated ``(chromosome, start, stop)`` output partitions."""
     if chromosome_slices is None:
@@ -146,6 +161,10 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     profile_psi = 0.0
     profile_total = 0.0
     profile_iterations = 0
+    sigma_floor_count = 0
+    sigma_floor_material_count = 0
+    sigma_floor_first_iteration = None
+    sigma_floor_worst_relative = 0.0
 
     # MCMC
     pp = 0
@@ -162,10 +181,28 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
         s2 = float((beta**2 / psi).sum())
         e1 = float(n/2.0*(1.0 - 2.0*s1 + quad))
         e2 = float(n/2.0*s2)
+        relative_deficit = _sigma_floor_relative_deficit(e1, e2, itr)
+        if relative_deficit is not None:
+            sigma_floor_count += 1
+            if sigma_floor_first_iteration is None:
+                sigma_floor_first_iteration = itr
+            sigma_floor_worst_relative = max(
+                sigma_floor_worst_relative, relative_deficit
+            )
+            if relative_deficit > _SIGMA_FLOOR_RELATIVE_TOLERANCE:
+                sigma_floor_material_count += 1
         err = max(e1, e2)
+        if err <= 0.0:
+            raise FloatingPointError(
+                'non-positive sigma rate at iteration %d: %r' % (itr, err)
+            )
 
         # force sigma to be a Python float (not a 0-d array)
         sigma = float(1.0/np.random.gamma((n+p)/2.0, 1.0/err))
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            raise FloatingPointError(
+                'invalid sigma draw at iteration %d: %r' % (itr, sigma)
+            )
 
         if hasattr(psi_sampler, 'sample_joint'):
             psi_start = time.perf_counter()
@@ -297,6 +334,20 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     # print estimated phi
     if phi_updt == True:
         print('... Estimated global shrinkage parameter: %1.2e ...' % phi_est )
+
+    if sigma_floor_count:
+        print(
+            '... WARNING: sigma residual safeguard: %d/%d activations '
+            '(%d material; first iteration %d; worst relative deficit '
+            '%.3e) ...' % (
+                sigma_floor_count, n_iter, sigma_floor_material_count,
+                sigma_floor_first_iteration, sigma_floor_worst_relative,
+            )
+        )
+    else:
+        print(
+            '... sigma residual safeguard: 0/%d activations ...' % n_iter
+        )
 
     if profile and hasattr(beta_sampler, 'profile_summary'):
         print('[PROFILE %s] %s' %
