@@ -103,6 +103,21 @@ def parse_param():
     elif param_dict['out_dir'] == None:
         print('* Please specify the output directory using --out_dir\n')
         sys.exit(2)
+    elif param_dict['n_iter'] < 1:
+        print('* --n_iter must be at least 1\n')
+        sys.exit(2)
+    elif not 0 <= param_dict['n_burnin'] < param_dict['n_iter']:
+        print('* --n_burnin must be in [0, n_iter)\n')
+        sys.exit(2)
+    elif param_dict['thin'] < 1:
+        print('* --thin must be at least 1\n')
+        sys.exit(2)
+    elif param_dict['n_burnin'] + param_dict['thin'] > param_dict['n_iter']:
+        print(
+            '* sampling schedule retains no posterior draws; increase '
+            '--n_iter or decrease --n_burnin or --thin\n'
+        )
+        sys.exit(2)
     elif param_dict['joint_chromosomes'] not in ('TRUE', 'FALSE'):
         print('* --joint_chromosomes must be True or False\n')
         sys.exit(2)

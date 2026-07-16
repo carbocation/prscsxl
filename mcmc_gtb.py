@@ -57,6 +57,28 @@ def _profile_label(partitions, joint_chromosomes):
     return 'joint chr%s' % ','.join(ranges)
 
 
+def _posterior_iterations(n_iter, n_burnin, thin):
+    """Return iterations retained by thinning after burn-in."""
+    n_iter = int(n_iter)
+    n_burnin = int(n_burnin)
+    thin = int(thin)
+
+    if n_iter < 1:
+        raise ValueError('n_iter must be at least 1')
+    if not 0 <= n_burnin < n_iter:
+        raise ValueError('n_burnin must be in [0, n_iter)')
+    if thin < 1:
+        raise ValueError('thin must be at least 1')
+
+    retained = range(n_burnin + thin, n_iter + 1, thin)
+    if not retained:
+        raise ValueError(
+            'sampling schedule retains no posterior draws; increase n_iter '
+            'or decrease n_burnin or thin'
+        )
+    return retained
+
+
 def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
          thin, chrom, out_dir, beta_std, write_psi, write_pst, seed,
          chromosome_slices=None, backend='cpu', cuda_device=0,
@@ -71,7 +93,10 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
     # derived stats
     beta_mrg = np.array(sst_dict['BETA'], ndmin=2).T
     maf = np.array(sst_dict['MAF'], ndmin=2).T
-    n_pst = int((n_iter-n_burnin)/thin)
+    posterior_iterations = _posterior_iterations(
+        n_iter, n_burnin, thin
+    )
+    n_pst = len(posterior_iterations)
     p = len(sst_dict['SNP'])
     joint_chromosomes = chromosome_slices is not None
     partitions = _chromosome_partitions(chrom, chromosome_slices, p)
@@ -176,7 +201,7 @@ def mcmc(a, b, phi, sst_dict, n, ld_blk, blk_size, n_iter, n_burnin,
             phi = np.random.gamma(p*b+0.5, 1.0/(delta_sum+w))
 
         # posterior
-        if (itr>n_burnin) and (itr % thin == 0):
+        if itr in posterior_iterations:
             beta_est = beta_est + beta/n_pst
             psi_est = psi_est + psi/n_pst
             sigma_est = sigma_est + sigma/n_pst

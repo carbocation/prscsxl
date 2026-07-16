@@ -101,6 +101,31 @@ class CommandLineCharacterizationTests(unittest.TestCase):
                     PRScs.parse_param()
         self.assertEqual(exit_context.exception.code, 2)
 
+    def test_invalid_sampling_schedules_are_rejected(self):
+        base_argv = [
+            'PRScs.py',
+            '--ref_dir=/tmp/ldblk_ukbb_eur',
+            '--bim_prefix=/tmp/target',
+            '--sst_file=/tmp/sumstats',
+            '--n_gwas=1000',
+            '--out_dir=/tmp/output',
+        ]
+        invalid_options = [
+            ['--n_iter=0'],
+            ['--n_iter=10', '--n_burnin=-1'],
+            ['--n_iter=10', '--n_burnin=10'],
+            ['--thin=0'],
+            ['--n_iter=10', '--n_burnin=8', '--thin=3'],
+        ]
+
+        for options in invalid_options:
+            with self.subTest(options=options):
+                with mock.patch.object(sys, 'argv', base_argv + options):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit) as exit_context:
+                            PRScs.parse_param()
+                self.assertEqual(exit_context.exception.code, 2)
+
     def test_benchmark_accepts_only_cpu_and_cuda_backends(self):
         with mock.patch.object(
                 sys, 'argv',

@@ -254,6 +254,41 @@ class _FixedPsiBackend:
 
 
 class JointChromosomeSamplerTests(unittest.TestCase):
+    def test_posterior_thinning_is_measured_from_end_of_burnin(self):
+        self.assertEqual(
+            list(mcmc_gtb._posterior_iterations(10, 3, 4)), [7]
+        )
+        self.assertEqual(
+            list(mcmc_gtb._posterior_iterations(10, 4, 2)), [6, 8, 10]
+        )
+
+    def test_non_aligned_burnin_writes_the_expected_number_of_draws(self):
+        summary = _summary(1, ['rs1'])
+        beta_factory = mock.Mock(return_value=_FixedBetaBackend(1))
+        psi_factory = mock.Mock(return_value=_FixedPsiBackend())
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = os.path.join(directory, 'retention')
+            with mock.patch.object(
+                    mcmc_gtb, 'make_beta_backend', beta_factory):
+                with mock.patch.object(
+                        mcmc_gtb, 'make_psi_backend', psi_factory):
+                    with mock.patch.object(
+                            mcmc_gtb.np.random, 'gamma', return_value=1.0):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            mcmc_gtb.mcmc(
+                                1.0, 0.5, 0.1, summary, 100,
+                                [np.eye(1)], [1], 10, 3, 4, 1, output,
+                                'TRUE', 'FALSE', 'TRUE', 123,
+                            )
+
+            effect_file = output + '_pst_eff_a1_b0.5_phi1e-01_chr1.txt'
+            with open(effect_file) as ff:
+                fields = ff.readline().split()
+
+        # Five identifying fields followed by the one retained beta draw.
+        self.assertEqual(len(fields), 6)
+
     def test_joint_profile_label_compacts_consecutive_chromosomes(self):
         partitions = [(chromosome, 0, 0) for chromosome in range(1, 23)]
         self.assertEqual(

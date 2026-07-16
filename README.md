@@ -282,7 +282,7 @@ where SNP is the rs ID, A1 is the effect allele, A2 is the alternative allele, B
 
  - MCMC_BURNIN (optional): Number of burnin iterations. Default is 500.
 
- - MCMC_THINNING_FACTOR (optional): Thinning factor of the Markov chain. Default is 5.
+ - MCMC_THINNING_FACTOR (optional): Thinning factor of the Markov chain. Thinning is measured from the end of burn-in, so the first retained draw is at iteration `MCMC_BURNIN + MCMC_THINNING_FACTOR`. Default is 5.
 
  - CHROM (optional): The chromosome(s) on which the model is fitted, separated by comma, e.g., `--chrom=1,3,5`. Parallel computation for the 22 autosomes is recommended. Default is iterating through 22 autosomes (can be time-consuming).
 
